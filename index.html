@@ -1,0 +1,886 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Creative Light Table</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  :root{--surface:#e9ebee;--card:#fff;--ink:#16181d;--ink-soft:#5b626e;--line:#d5d9df;
+    --cobalt:#1f3fd4;--cobalt-soft:#e7ebfc;--ok:#0d7a4f;--bad:#b3261e;--amber:#b8860b;--radius:10px}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--surface);color:var(--ink);font:15px/1.5 Inter,system-ui,sans-serif}
+  a{color:var(--cobalt)}
+  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;padding:24px 32px 0}
+  h1{font:800 26px/1 Archivo,sans-serif;letter-spacing:-.02em;margin:0}
+  h1 span{color:var(--cobalt)}
+  .sub{color:var(--ink-soft);font-size:13px}
+  .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:14px 32px 0}
+  input[type=text],select{padding:11px 14px;border:1px solid var(--line);border-radius:var(--radius);
+    font:14px/1 "IBM Plex Mono",monospace;background:var(--card);color:var(--ink)}
+  input[type=text]{flex:1;min-width:260px}
+  input[type=text]:focus,select:focus{outline:2px solid var(--cobalt);outline-offset:1px;border-color:transparent}
+  button{padding:11px 18px;border:0;border-radius:var(--radius);background:var(--cobalt);
+    color:#fff;font:600 14px Inter,sans-serif;cursor:pointer}
+  button:hover{filter:brightness(1.08)}
+  button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+  button.ghost{background:var(--card);color:var(--ink);border:1px solid var(--line)}
+  button:disabled{opacity:.5;cursor:default}
+  #console{display:none;margin:14px 32px 0;padding:10px 14px;background:var(--ink);color:#dfe3ea;
+    border-radius:var(--radius);font:500 13px "IBM Plex Mono",monospace}
+  #console.on{display:flex;gap:18px;flex-wrap:wrap}
+  #console .dot{color:var(--cobalt-soft)}
+  #console.done{background:var(--ok)} #console.failed{background:var(--bad);color:#fff}
+
+  /* ---- toolbar ---- */
+  .toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:14px 32px 4px}
+  .toolbar input[type=text]{min-width:200px;flex:0 1 320px}
+  .count{margin-left:auto;font:500 13px "IBM Plex Mono",monospace;color:var(--ink-soft)}
+  .resolving{font:500 12px "IBM Plex Mono",monospace;color:var(--cobalt)}
+
+  /* ---- app table ---- */
+  .wrap{padding:12px 32px 40px}
+  table{width:100%;border-collapse:separate;border-spacing:0;background:var(--card);
+    border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  thead th{text-align:left;font:600 12px Inter;text-transform:uppercase;letter-spacing:.05em;
+    color:var(--ink-soft);padding:12px 14px;background:#f4f5f7;border-bottom:1px solid var(--line);white-space:nowrap}
+  thead th.num{text-align:right}
+  thead th.sortable{cursor:pointer;user-select:none}
+  thead th.sortable:hover{color:var(--ink)}
+  thead th.sortable .sortind{font:600 10px "IBM Plex Mono",monospace;margin-left:4px;color:var(--ink-soft);opacity:.45}
+  thead th.sortable.active{color:var(--cobalt)}
+  thead th.sortable.active .sortind{opacity:1;color:var(--cobalt)}
+  tbody td{padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:middle}
+  tbody tr{cursor:pointer}
+  tbody tr:last-child td{border-bottom:0}
+  tbody tr:hover{background:#f7f8fa}
+  td.num{text-align:right;font:500 13px "IBM Plex Mono",monospace;color:var(--ink)}
+  .idx{color:var(--ink-soft);font:500 12px "IBM Plex Mono",monospace}
+  .appcell{display:flex;align-items:center;gap:12px;min-width:240px}
+  .icon{width:44px;height:44px;border-radius:11px;flex:none;object-fit:cover;background:var(--surface);
+    border:1px solid var(--line)}
+  .icon.ph{display:flex;align-items:center;justify-content:center;font:700 15px Archivo;color:var(--ink-soft)}
+  .appinfo{min-width:0}
+  .aptitle{font:600 14px Inter;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px}
+  .appkg{font:500 11px "IBM Plex Mono",monospace;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px}
+  .appsub{display:flex;gap:8px;align-items:center;margin-top:1px}
+  .rating{font:600 11px Inter;color:var(--amber);white-space:nowrap}
+  .dev{font:500 11px Inter;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
+  .date{font:500 12px "IBM Plex Mono",monospace;color:var(--ink);white-space:nowrap}
+  .ccwrap{display:flex;flex-wrap:wrap;gap:4px;align-items:center;max-width:260px}
+  .cc{font:600 10px "IBM Plex Mono",monospace;background:var(--cobalt-soft);color:var(--cobalt);border-radius:4px;padding:2px 5px}
+  .cc.more{background:var(--surface);color:var(--ink-soft)}
+  .ccnone{font:500 11px "IBM Plex Mono",monospace;color:var(--ink-soft)}
+  .badge{font:600 10px Inter;text-transform:uppercase;letter-spacing:.05em;padding:2px 7px;border-radius:5px;
+    background:var(--cobalt-soft);color:var(--cobalt)}
+  .badge.video{background:#fdeeea;color:#b3421e}
+  .badge.text{background:#eef7ef;color:var(--ok)}
+  .fmts{display:flex;gap:4px;flex-wrap:wrap}
+  .dlcell{text-align:right;white-space:nowrap;display:flex;gap:6px;justify-content:flex-end;align-items:center}
+  .csvbtn{background:var(--card);color:var(--ink-soft);border:1px solid var(--line);border-radius:8px;
+    padding:6px 9px;cursor:pointer;font:600 11px Inter}
+  .csvbtn:hover{color:var(--ok);border-color:var(--ok);background:#eef7ef}
+  .dlbtn{background:var(--card);color:var(--ink-soft);border:1px solid var(--line);border-radius:8px;
+    padding:6px 8px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;line-height:0}
+  .dlbtn:hover{color:var(--cobalt);border-color:var(--cobalt);background:var(--cobalt-soft)}
+  .dlbtn:disabled{opacity:.6;cursor:default}
+  .dlbtn svg{display:block}
+  .spin{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--cobalt);
+    border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .playbtn.dl{background:var(--card);color:var(--cobalt);border:1px solid var(--line);cursor:pointer;
+    display:inline-flex;align-items:center;gap:6px}
+  .playbtn.dl:hover{background:var(--cobalt-soft)}
+
+  /* ---- detail page ---- */
+  .back{display:inline-flex;align-items:center;gap:6px;background:var(--card);color:var(--ink);
+    border:1px solid var(--line);margin:14px 32px 0}
+  .dhead{display:flex;gap:18px;align-items:flex-start;padding:16px 32px 6px;flex-wrap:wrap}
+  .dicon{width:84px;height:84px;border-radius:19px;flex:none;object-fit:cover;background:var(--surface);border:1px solid var(--line)}
+  .dmeta{min-width:0;flex:1}
+  .dtitle{font:800 24px/1.1 Archivo,sans-serif;letter-spacing:-.02em;margin:0}
+  .dpkg{font:500 12px "IBM Plex Mono",monospace;color:var(--ink-soft);margin-top:4px;word-break:break-all}
+  .drow{display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-top:8px;font-size:13px;color:var(--ink-soft)}
+  .drow b{color:var(--ink)}
+  .dstat{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 12px;font:500 12px "IBM Plex Mono",monospace}
+  .dstat b{font-family:Inter}
+  .playbtn{background:var(--cobalt);color:#fff;text-decoration:none;padding:8px 14px;border-radius:8px;font:600 13px Inter}
+  .dcc{padding:2px 32px 8px}
+  .dcc .ccwrap{max-width:none}
+  .dsec{font:700 14px Archivo;padding:14px 32px 4px;color:var(--ink)}
+
+  /* ---- creative cards (detail assets) ---- */
+  .grid{display:grid;gap:14px;padding:8px 32px 40px;grid-template-columns:repeat(auto-fill,minmax(230px,1fr))}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;display:flex;flex-direction:column}
+  .thumb{aspect-ratio:4/3;background:repeating-conic-gradient(#f3f4f6 0% 25%,#e9ebee 0% 50%) 0 0/20px 20px;
+    display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .thumb img{width:100%;height:100%;object-fit:contain}
+  .thumb .noimg{font:500 12px "IBM Plex Mono",monospace;color:var(--ink-soft)}
+  .cmeta{display:flex;align-items:center;gap:8px;padding:9px 12px;border-top:1px solid var(--line)}
+  .cmeta .cid{font:500 11px "IBM Plex Mono",monospace;color:var(--ink-soft);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cmeta a{color:var(--cobalt);font:600 12px Inter;text-decoration:none}
+  .dupe{font:600 10px "IBM Plex Mono",monospace;background:var(--surface);color:var(--ink-soft);border-radius:4px;padding:2px 6px}
+  .assets{display:flex;flex-wrap:wrap;gap:6px;padding:0 12px 8px}
+  .assets a{font:600 11px Inter;text-decoration:none;color:var(--cobalt);background:var(--cobalt-soft);border-radius:5px;padding:3px 8px}
+  .assets a.vid{background:#fdeeea;color:#b3421e}
+  .cgeo{display:flex;flex-wrap:wrap;gap:4px;align-items:center;padding:8px 12px 10px;border-top:1px solid var(--line)}
+  .cgeo .geocount{font:600 11px Inter;color:var(--ink);margin-right:2px}
+  .geoload,.geonone{font:500 11px "IBM Plex Mono",monospace;color:var(--ink-soft)}
+  .dates{display:flex;justify-content:space-between;gap:8px;padding:0 12px 9px;font:500 11px "IBM Plex Mono",monospace;color:var(--ink-soft)}
+  .days{background:var(--surface);border-radius:5px;padding:1px 6px}
+
+  .empty{padding:60px 32px;text-align:center;color:var(--ink-soft)}
+  .hidden{display:none !important}
+  .modal{position:fixed;inset:0;background:rgba(22,24,29,.45);display:flex;align-items:center;justify-content:center;padding:24px;z-index:100}
+  .modal-box{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px 24px;max-width:720px;width:100%;box-shadow:0 20px 50px rgba(0,0,0,.12)}
+  .modal-box h2{margin:0 0 8px;font:700 18px Archivo,sans-serif}
+  .modal-hint{margin:0 0 12px;font-size:13px;color:var(--ink-soft);line-height:1.45}
+  .modal-box textarea{width:100%;min-height:180px;resize:vertical;font:12px/1.45 "IBM Plex Mono",monospace;padding:12px;border:1px solid var(--line);border-radius:var(--radius)}
+  .modal-status{min-height:20px;margin:10px 0 0;font:500 12px "IBM Plex Mono",monospace;color:var(--ok)}
+  .modal-status.bad{color:var(--bad)}
+  .modal-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+  .auth-hint{margin:0 32px;padding:10px 14px;background:#fff8e6;border:1px solid #f0d080;border-radius:var(--radius);font:500 13px Inter;color:#6b4e00}
+  .auth-hint.ok{background:#eef7ef;border-color:#a8d5b8;color:var(--ok)}
+  @media (prefers-reduced-motion:no-preference){.card{transition:transform .12s ease}.card:hover{transform:translateY(-2px)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Creative <span>Light Table</span></h1>
+  <div class="sub">Google Ads Transparency &rarr; Supabase &middot; app-level intelligence</div>
+</header>
+
+<div class="bar">
+  <input id="workerUrl" type="text" placeholder="Worker URL &mdash; https://your-worker.workers.dev"
+    aria-label="Worker URL" value="https://google-trans.arya-appscale.workers.dev">
+  <button id="saveWorker" class="ghost">Save</button>
+</div>
+<div class="bar">
+  <input id="advInput" type="text"
+    placeholder="Paste advertiser URL or ID &mdash; e.g. AR02377450198621224961" aria-label="Advertiser URL or ID">
+  <button id="syncBtn">Sync ads</button>
+  <button id="loadBtn" class="ghost">Load apps</button>
+  <button id="tokenBtn" class="ghost" title="Paste cURL from DevTools — auto-fills token and cookie">Paste curl</button>
+</div>
+<p id="authHint" class="auth-hint hidden" role="status"></p>
+<div id="console" role="status"></div>
+
+<div id="curlModal" class="modal hidden" role="dialog" aria-labelledby="curlTitle" aria-modal="true">
+  <div class="modal-box">
+    <h2 id="curlTitle">Paste cURL from DevTools</h2>
+    <p class="modal-hint">Open adstransparency.google.com → DevTools → Network → SearchCreatives → right-click → <b>Copy as cURL</b>. Token and Cookie are parsed automatically.</p>
+    <textarea id="curlInput" rows="10" spellcheck="false" aria-label="cURL command"
+      placeholder="curl 'https://adstransparency.google.com/anji/_/rpc/SearchService/SearchCreatives?authuser=0' \&#10;  -H 'X-Framework-Xsrf-Token: ...' \&#10;  -H 'Cookie: ...'"></textarea>
+    <div id="curlStatus" class="modal-status"></div>
+    <div class="modal-actions">
+      <button id="curlSave">Save credentials</button>
+      <button id="curlClear" class="ghost">Clear saved</button>
+      <button id="curlClose" class="ghost">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== TABLE VIEW ===== -->
+<section id="tableView">
+  <div class="toolbar" id="toolbar" hidden>
+    <input id="search" type="text" placeholder="Filter by app name or package" aria-label="Search apps">
+    <select id="countryFilter" aria-label="Country"><option value="all">All countries</option></select>
+    <select id="formatFilter" aria-label="Format">
+      <option value="all">All formats</option>
+      <option value="video">Video</option>
+      <option value="image">Image</option>
+      <option value="text">Text</option>
+    </select>
+    <span class="resolving" id="resolving"></span>
+    <button id="fillBtn" class="ghost" title="Resolve app names for stored ads (one small batch per click)">Fill names</button>
+    <span class="count" id="count"></span>
+  </div>
+  <div class="wrap">
+    <table id="appTable" hidden>
+      <thead><tr>
+        <th class="num">#</th>
+        <th>App</th>
+        <th class="num">Videos</th>
+        <th>Formats</th>
+        <th class="sortable" data-sort="first_seen" title="Sort by campaign start">Campaign start<span class="sortind"></span></th>
+        <th class="sortable" data-sort="last_seen" title="Sort by last visible">Last visible<span class="sortind"></span></th>
+        <th>Countries</th>
+        <th></th>
+      </tr></thead>
+      <tbody id="appBody"></tbody>
+    </table>
+    <div class="empty" id="empty">1) Paste curl (token + cookie) &nbsp; 2) Sync ads (20 per page) &nbsp; 3) Load apps</div>
+  </div>
+</section>
+
+<!-- ===== DETAIL VIEW ===== -->
+<section id="detailView" class="hidden">
+  <button class="back" id="backBtn">&larr; Back to apps</button>
+  <div class="dhead" id="dhead"></div>
+  <div class="dcc" id="dcc"></div>
+  <div class="dsec" id="dsec"></div>
+  <div class="grid" id="assets"></div>
+</section>
+
+<script>
+const $ = (s) => document.querySelector(s);
+
+/* ---------- worker URL + auth ---------- */
+function workerBase() {
+  const typed = $("#workerUrl").value.trim().replace(/\/+$/, "");
+  const saved = (localStorage.getItem("worker_url") || "").replace(/\/+$/, "");
+  return typed || saved;
+}
+$("#saveWorker").onclick = () => {
+  const v = $("#workerUrl").value.trim().replace(/\/+$/, "");
+  if (!/^https?:\/\//.test(v)) return alert("Enter the full worker URL, starting with https://");
+  localStorage.setItem("worker_url", v);
+  alert("Saved. API calls now go to " + v);
+};
+(function initWorkerUrl(){
+  const saved = localStorage.getItem("worker_url");
+  if (saved) $("#workerUrl").value = saved;
+  else localStorage.setItem("worker_url", $("#workerUrl").value.trim().replace(/\/+$/, ""));
+})();
+
+function dashKey() {
+  let k = localStorage.getItem("dash_key");
+  if (k === null) { k = prompt("Dashboard key (leave empty if DASH_KEY is not set):") || ""; localStorage.setItem("dash_key", k); }
+  return k;
+}
+
+function authHeaders(extra) {
+  const h = Object.assign({}, extra || {}, { Authorization: "Bearer " + dashKey() });
+  const xt = localStorage.getItem("xsrf_token");
+  if (xt) h["X-Xsrf-Override"] = xt;
+  const ck = localStorage.getItem("transparency_cookie");
+  if (ck) h["X-Cookie-Override"] = ck;
+  return h;
+}
+
+function maskSecret(s) {
+  if (!s) return "";
+  if (s.length <= 12) return "••••";
+  return s.slice(0, 6) + "…" + s.slice(-4);
+}
+
+function parseCurl(text) {
+  const out = { token: null, cookie: null, advertiserIds: [] };
+  if (!text || !/\bcurl\b/i.test(text)) return out;
+  const s = text.replace(/\\\r?\n/g, " ");
+  const headerRe = /(?:-H|--header)\s+(?:'((?:\\'|[^'])*)'|"((?:\\"|[^"])*)")/gi;
+  let m;
+  while ((m = headerRe.exec(s)) !== null) {
+    const h = (m[1] || m[2] || "").replace(/\\(['"])/g, "$1");
+    const colon = h.indexOf(":");
+    if (colon < 0) continue;
+    const name = h.slice(0, colon).trim().toLowerCase();
+    const val = h.slice(colon + 1).trim();
+    if (name === "x-framework-xsrf-token" && val) out.token = val;
+    else if (name === "cookie" && val) out.cookie = val;
+  }
+  if (!out.cookie) {
+    const cm = s.match(/(?:--cookie|-b)\s+(?:'([^']+)'|"([^"]+)"|(\S+))/i);
+    if (cm) out.cookie = (cm[1] || cm[2] || cm[3] || "").replace(/\\(['"])/g, "$1");
+  }
+  const dm = s.match(/(?:--data-raw|--data|-d)\s+(?:'((?:\\'|[^'])*)'|"((?:\\"|[^"])*)")/i);
+  if (dm) {
+    let body = dm[1] || dm[2] || "";
+    try { body = decodeURIComponent(body.replace(/^f\.req=/, "")); } catch (_) {}
+    for (const id of body.matchAll(/AR\d{10,}/g)) {
+      if (!out.advertiserIds.includes(id[0])) out.advertiserIds.push(id[0]);
+    }
+  }
+  return out;
+}
+
+function hasCredentials() {
+  return Boolean(localStorage.getItem("xsrf_token") && localStorage.getItem("transparency_cookie"));
+}
+
+function updateAuthHint() {
+  const el = $("#authHint");
+  if (hasCredentials()) {
+    el.textContent = "Credentials saved (token + cookie). Paste curl again if sync fails with 403/429.";
+    el.className = "auth-hint ok";
+  } else {
+    el.textContent = "Required before sync: click Paste curl and save a SearchCreatives cURL from DevTools. Google blocks the worker without your browser session.";
+    el.className = "auth-hint";
+  }
+  el.classList.remove("hidden");
+}
+
+function updateAuthBtn() {
+  const t = localStorage.getItem("xsrf_token");
+  const c = localStorage.getItem("transparency_cookie");
+  const parts = [];
+  if (t) parts.push("token");
+  if (c) parts.push("cookie");
+  $("#tokenBtn").textContent = parts.length ? "Paste curl (" + parts.join("+") + ")" : "Paste curl";
+  updateAuthHint();
+}
+
+function openCurlModal(hint) {
+  $("#curlInput").value = "";
+  $("#curlStatus").textContent = hint || "";
+  $("#curlStatus").className = "modal-status";
+  $("#curlModal").classList.remove("hidden");
+  $("#curlInput").focus();
+}
+
+function closeCurlModal() {
+  $("#curlModal").classList.add("hidden");
+}
+
+function saveFromCurl() {
+  const parsed = parseCurl($("#curlInput").value);
+  const status = $("#curlStatus");
+  if (!parsed.token && !parsed.cookie) {
+    status.textContent = "Could not find X-Framework-Xsrf-Token or Cookie in that cURL.";
+    status.className = "modal-status bad";
+    return false;
+  }
+  if (parsed.token) localStorage.setItem("xsrf_token", parsed.token);
+  if (parsed.cookie) localStorage.setItem("transparency_cookie", parsed.cookie);
+  if (parsed.advertiserIds.length === 1 && !$("#advInput").value.trim())
+    $("#advInput").value = parsed.advertiserIds[0];
+  const msgs = [];
+  if (parsed.token) msgs.push("Token saved (" + maskSecret(parsed.token) + ")");
+  if (parsed.cookie) msgs.push("Cookie saved (" + maskSecret(parsed.cookie) + ")");
+  if (parsed.advertiserIds.length) msgs.push("Advertiser: " + parsed.advertiserIds.join(", "));
+  status.textContent = msgs.join(" · ") + " — wait ~60s before Sync ads.";
+  status.className = "modal-status";
+  updateAuthBtn();
+  return true;
+}
+
+$("#tokenBtn").onclick = () => openCurlModal();
+$("#curlClose").onclick = closeCurlModal;
+$("#curlModal").onclick = (e) => { if (e.target === $("#curlModal")) closeCurlModal(); };
+$("#curlSave").onclick = () => { if (saveFromCurl()) setTimeout(closeCurlModal, 1400); };
+$("#curlClear").onclick = () => {
+  localStorage.removeItem("xsrf_token");
+  localStorage.removeItem("transparency_cookie");
+  updateAuthBtn();
+  $("#curlStatus").textContent = "Cleared saved token and cookie.";
+  $("#curlStatus").className = "modal-status";
+};
+updateAuthBtn();
+
+async function api(path, opts = {}) {
+  opts.headers = authHeaders(opts.headers);
+  const base = workerBase();
+  if (!/^https?:\/\//.test(base))
+    throw new Error("Worker URL is not set - type your https://...workers.dev URL above and click Save");
+  let r;
+  try { r = await fetch(base + path, opts); }
+  catch (e) {
+    throw new Error(e.message + " -> tried " + base +
+      ". Check the Worker URL is correct/reachable, or open the dashboard directly at " + base + " instead.");
+  }
+  const j = await r.json();
+  if (r.status === 401) { localStorage.removeItem("dash_key"); throw new Error("unauthorized - reload and re-enter key"); }
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+
+/* ---------- helpers ---------- */
+const esc = (x) => String(x == null ? "" : x).replace(/[&<>"']/g,
+  (s) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[s]));
+const ARROW = "\u2192", DOT = "\u00b7", STAR = "\u2605", TIMES = "\u00d7";
+window.imgFail = (img) => { const d = document.createElement("div"); d.className = "noimg"; d.textContent = "preview blocked"; img.replaceWith(d); };
+
+function fmtCount(n) {
+  if (n == null) return "";
+  n = Number(n);
+  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, "") + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "K";
+  return String(n);
+}
+function initials(name) { return (name || "?").trim().slice(0, 2).toUpperCase(); }
+
+function ccChips(countries, max) {
+  if (!countries || !countries.length) return '<span class="ccnone">' + (countries ? "none" : "resolving\u2026") + "</span>";
+  max = max || 8;
+  const chips = countries.slice(0, max).map((c) =>
+    '<span class="cc" title="' + esc(c.name + (c.last ? " " + DOT + " last " + c.last : "")) + '">' + esc(c.cc) + "</span>").join("");
+  const extra = countries.length > max
+    ? '<span class="cc more" title="' + esc(countries.slice(max).map((c) => c.name).join(", ")) + '">+' + (countries.length - max) + "</span>"
+    : "";
+  return chips + extra;
+}
+function fmtBadges(formats) {
+  return (formats || []).map((f) => '<span class="badge ' + f + '">' + f + "</span>").join("");
+}
+const extractId = (v) => (v.match(/AR\d{10,}/) || [null])[0];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const DL_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+const SPIN = '<span class="spin"></span>';
+
+function appDownloadParams(a) {
+  const p = new URLSearchParams({ acct: advertiserId });
+  if (a.app_package) p.set("package", a.app_package);
+  else if (a.app_url) p.set("url", a.app_url);
+  else if (a.app_name) p.set("name", a.app_name);
+  else p.set("orphan", "1");
+  return p.toString();
+}
+const fileBase = (a) => String(a.title || a.app_package || a.app_name || "app")
+  .replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").slice(0, 50) || "app";
+
+// ---- country list -> CSV export (client-side, instant) ----
+const csvCell = (s) => {
+  s = String(s == null ? "" : s);
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+};
+function countriesCsv(countries) {
+  const lines = ["code,country,first_shown,last_shown"];
+  for (const c of countries) lines.push([c.cc, csvCell(c.name), c.first || "", c.last || ""].join(","));
+  return lines.join("\r\n") + "\r\n";
+}
+function exportCountriesCsv(countries, filename) {
+  if (!countries || !countries.length) return alert("No country data resolved yet for this app.");
+  const blob = new Blob([countriesCsv(countries)], { type: "text/csv;charset=utf-8" });
+  const u = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = u; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(u), 1000);
+}
+const sortedCC = (list) => [...list].sort((x, y) => x.name.localeCompare(y.name));
+
+// downloads a server-built zip; needs a raw fetch (not api()) to read the blob
+async function downloadAssets(params, filename, btn) {
+  const base = workerBase();
+  if (!/^https?:\/\//.test(base)) return alert("Set the Worker URL first.");
+  const headers = authHeaders();
+  const old = btn ? btn.innerHTML : null;
+  if (btn) { btn.disabled = true; btn.innerHTML = SPIN; }
+  try {
+    const r = await fetch(base + "/api/download?" + params, { headers });
+    if (!r.ok) { let m = r.status; try { m = (await r.json()).error || m; } catch (_) {} throw new Error(m); }
+    const blob = await r.blob();
+    const u = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = u; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(u), 2000);
+  } catch (e) { alert("Download failed: " + e.message); }
+  finally { if (btn) { btn.disabled = false; btn.innerHTML = old; } }
+}
+
+/* ---------- state ---------- */
+let advertiserId = null, curFormat = "all";
+let appsData = [];              // [{...app, cmap:Map(cc->{cc,name,last})}]
+let resolvingPrev = false;     // batch preview-resolution in progress
+// default: newest last_seen first (matches API); click header to toggle
+let sortKey = "last_seen", sortDir = "desc";
+const countryNames = new Map(); // cc -> name (for the filter dropdown)
+
+/* ---------- manual sync (one page of 40 per tap) ---------- */
+let sessPages = 0, sessTotal = 0;
+let lastSyncAt = 0;
+const MIN_SYNC_GAP_MS = 60000;
+
+async function syncPageOnce(id, cursor) {
+  return api("/api/sync-page", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ advertiser_id: id, cursor }),
+  });
+}
+
+$("#syncBtn").onclick = async () => {
+  const id = extractId($("#advInput").value.trim());
+  if (!id) return alert("Could not find an AR... advertiser ID in that input.");
+  if (!hasCredentials()) {
+    openCurlModal("Paste a SearchCreatives cURL first. Google blocks the worker without your browser token + cookie.");
+    return;
+  }
+  if (advertiserId !== id) { advertiserId = id; sessPages = 0; sessTotal = 0; }
+  localStorage.setItem("last_adv", id);
+
+  const gap = Date.now() - lastSyncAt;
+  if (lastSyncAt && gap < MIN_SYNC_GAP_MS) {
+    const waitSec = Math.ceil((MIN_SYNC_GAP_MS - gap) / 1000);
+    return alert("Please wait " + waitSec + "s between sync taps to avoid Google throttling.");
+  }
+
+  const box = $("#console");
+  box.className = "on";
+  let cursor = localStorage.getItem("cursor:" + id) || null;
+  if (sessPages === 0 && cursor && !confirm("Continue previous sync from saved position? (Cancel = start over)")) {
+    cursor = null; localStorage.removeItem("cursor:" + id);
+  }
+  $("#syncBtn").disabled = true;
+  try {
+    const r = await syncPageOnce(id, cursor);
+    lastSyncAt = Date.now();
+    sessPages++; sessTotal += r.fetched;
+    box.classList.remove("failed");
+    box.innerHTML =
+      '<span class="dot">SYNC ' + esc(r.name || id) + "</span>" +
+      "<span>pages " + String(sessPages).padStart(3, "0") + "</span>" +
+      "<span>creatives " + String(sessTotal).padStart(5, "0") + (r.total_estimate ? " / ~" + r.total_estimate : "") + "</span>";
+    if (r.next_cursor) {
+      localStorage.setItem("cursor:" + id, r.next_cursor);
+      $("#syncBtn").textContent = "Fetch next 20";
+      box.innerHTML += "<span>stored " + r.fetched + " ads - click Load apps, then Fetch next 20 when ready</span>";
+    } else {
+      localStorage.removeItem("cursor:" + id);
+      $("#syncBtn").textContent = "Sync ads";
+      box.classList.add("done");
+      box.innerHTML += "<span>complete - click Load apps to view</span>";
+      sessPages = 0; sessTotal = 0;
+    }
+  } catch (e) {
+    box.classList.add("failed");
+    box.innerHTML =
+      '<span class="dot">SYNC ' + esc(id) + "</span>" +
+      "<span>failed: " + esc(e.message) + "</span>";
+    if (/429|rate limit/i.test(e.message)) {
+      box.innerHTML +=
+        "<span>Tip: wait 2–5 min, paste a fresh cURL, then try once. Do not click Sync repeatedly.</span>";
+    }
+    if (/xsrf|403/i.test(e.message)) {
+      openCurlModal("Google needs fresh credentials — paste a new SearchCreatives cURL from DevTools:");
+    }
+  }
+  $("#syncBtn").disabled = false;
+};
+
+$("#loadBtn").onclick = () => {
+  const id = extractId($("#advInput").value.trim());
+  if (!id) return alert("Paste the advertiser URL or ID first.");
+  advertiserId = id; localStorage.setItem("last_adv", id);
+  loadApps();
+};
+
+$("#search").oninput = renderTable;
+$("#countryFilter").onchange = renderTable;
+$("#formatFilter").onchange = () => { curFormat = $("#formatFilter").value; loadApps(); };
+
+/* ---------- load + render app table ---------- */
+async function loadApps() {
+  if (!advertiserId) return;
+  showTable();
+  $("#toolbar").hidden = false;
+  $("#empty").style.display = "none";
+  let data;
+  try {
+    data = await api("/api/apps?" + new URLSearchParams({ acct: advertiserId, format: curFormat }));
+  } catch (e) {
+    $("#appTable").hidden = true;
+    $("#empty").style.display = "block";
+    $("#empty").textContent = "Couldn't load apps: " + e.message +
+      " - if this mentions a column, run the ALTER TABLE / apps-table lines in schema.sql on Supabase.";
+    return;
+  }
+  appsData = (data.apps || []).map((a) => {
+    const cmap = new Map();
+    for (const c of a.countries || []) cmap.set(c.cc, c);
+    return Object.assign(a, { cmap });
+  });
+  // seed the country dropdown
+  countryNames.clear();
+  for (const c of data.all_countries || []) countryNames.set(c.cc, c.name);
+  for (const a of appsData) for (const c of a.countries || []) if (!countryNames.has(c.cc)) countryNames.set(c.cc, c.name);
+  rebuildCountryFilter();
+
+  if (!appsData.length) {
+    $("#appTable").hidden = true;
+    $("#empty").style.display = "block";
+    $("#empty").textContent = "No apps yet - run a Sync first, then Load apps.";
+    return;
+  }
+  renderTable();
+  if (data.unresolved_previews > 0)
+    $("#resolving").textContent = data.unresolved_previews + " ads need names - click Fill names (5 per click)";
+  else
+    $("#resolving").textContent = "";
+}
+
+// One manual batch only - never loops silently in the background
+$("#fillBtn").onclick = async () => {
+  if (!advertiserId || resolvingPrev) return;
+  resolvingPrev = true;
+  $("#fillBtn").disabled = true;
+  try {
+    const r = await api("/api/resolve?" + new URLSearchParams({ acct: advertiserId, limit: 5 }));
+    $("#resolving").textContent = r.remaining > 0
+      ? "Filled " + r.resolved + " - " + r.remaining + " left (click Fill names again)"
+      : "All app names filled";
+    loadApps();
+  } catch (e) {
+    $("#resolving").textContent = "Fill names failed: " + e.message;
+  } finally {
+    resolvingPrev = false;
+    $("#fillBtn").disabled = false;
+  }
+};
+
+function rebuildCountryFilter() {
+  const sel = $("#countryFilter");
+  const cur = sel.value;
+  const opts = [...countryNames.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  sel.innerHTML = '<option value="all">All countries</option>' +
+    opts.map(([cc, name]) => '<option value="' + esc(cc) + '">' + esc(name) + " (" + esc(cc) + ")</option>").join("");
+  if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+}
+
+function filteredApps() {
+  const q = $("#search").value.trim().toLowerCase();
+  const cc = $("#countryFilter").value;
+  const rows = appsData.filter((a) => {
+    if (q) {
+      const hay = ((a.title || "") + " " + (a.app_name || "") + " " + (a.app_package || "")).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    if (cc && cc !== "all" && !a.cmap.has(cc)) return false;
+    return true;
+  });
+  const dir = sortDir === "asc" ? 1 : -1;
+  rows.sort((a, b) => {
+    const av = a[sortKey] || "";
+    const bv = b[sortKey] || "";
+    if (!av && !bv) return 0;
+    if (!av) return 1;   // missing dates last
+    if (!bv) return -1;
+    return av.localeCompare(bv) * dir;
+  });
+  return rows;
+}
+
+function updateSortHeaders() {
+  document.querySelectorAll("th.sortable").forEach((th) => {
+    const on = th.dataset.sort === sortKey;
+    th.classList.toggle("active", on);
+    const ind = th.querySelector(".sortind");
+    if (ind) ind.textContent = on ? (sortDir === "asc" ? "\u25b2" : "\u25bc") : "\u21c5";
+  });
+}
+document.querySelectorAll("th.sortable").forEach((th) => {
+  th.onclick = () => {
+    const key = th.dataset.sort;
+    if (sortKey === key) sortDir = sortDir === "asc" ? "desc" : "asc";
+    else { sortKey = key; sortDir = key === "first_seen" ? "asc" : "desc"; }
+    updateSortHeaders();
+    renderTable();
+  };
+});
+updateSortHeaders();
+
+function renderTable() {
+  const rows = filteredApps();
+  $("#count").textContent = rows.length + " app" + (rows.length === 1 ? "" : "s") +
+    (appsData.length !== rows.length ? " / " + appsData.length : "");
+  updateSortHeaders();
+  const tb = $("#appBody");
+  tb.innerHTML = "";
+  $("#appTable").hidden = false;
+  const frag = document.createDocumentFragment();
+  rows.forEach((a, i) => frag.appendChild(rowFor(a, i + 1)));
+  tb.appendChild(frag);
+}
+
+function rowFor(a, idx) {
+  const tr = document.createElement("tr");
+  tr.dataset.key = a.app_key;
+  const countries = [...a.cmap.values()].sort((x, y) => x.name.localeCompare(y.name));
+  tr.innerHTML =
+    '<td class="num idx">' + idx + "</td>" +
+    '<td><div class="appcell">' + iconHtml(a) +
+      '<div class="appinfo">' +
+        '<div class="aptitle" title="' + esc(a.title) + '">' + esc(a.title) + "</div>" +
+        (a.app_package ? '<div class="appkg" title="' + esc(a.app_package) + '">' + esc(a.app_package) + "</div>" : "") +
+        '<div class="appsub">' +
+          (a.rating != null ? '<span class="rating">' + STAR + " " + a.rating + (a.rating_count ? " (" + fmtCount(a.rating_count) + ")" : "") + "</span>" : "") +
+          (a.developer ? '<span class="dev" title="' + esc(a.developer) + '">' + esc(a.developer) + "</span>" : "") +
+        "</div>" +
+      "</div></div></td>" +
+    '<td class="num">' + a.video_count + "</td>" +
+    '<td><div class="fmts">' + fmtBadges(a.formats) + "</div></td>" +
+    '<td class="date">' + (a.first_seen || "?") + "</td>" +
+    '<td class="date">' + (a.last_seen || "?") + "</td>" +
+    '<td><div class="ccwrap">' + ccChips(countries) + "</div></td>" +
+    '<td class="dlcell">' +
+      '<button class="csvbtn" title="Export country list (CSV)">CSV</button>' +
+      '<button class="dlbtn" title="Download this app\'s assets (zip)">' + DL_ICON + "</button>" +
+    "</td>";
+  tr.onclick = () => openApp(a);
+  const dl = tr.querySelector(".dlbtn");
+  dl.onclick = (e) => { e.stopPropagation(); downloadAssets(appDownloadParams(a), fileBase(a) + "-assets.zip", dl); };
+  const csv = tr.querySelector(".csvbtn");
+  csv.onclick = (e) => { e.stopPropagation(); exportCountriesCsv(sortedCC(a.cmap.values()), fileBase(a) + "-countries.csv"); };
+  return tr;
+}
+
+function iconHtml(a) {
+  if (a.icon_url)
+    return '<img class="icon" loading="lazy" src="' + esc(a.icon_url) + '" alt="" onerror="this.classList.add(\'ph\');this.removeAttribute(\'src\');this.textContent=\'' + esc(initials(a.title)) + '\'">';
+  return '<div class="icon ph">' + esc(initials(a.title)) + "</div>";
+}
+
+function rowEl(key) { return document.querySelector('tr[data-key="' + CSS.escape(key) + '"]'); }
+
+/* ---------- detail page ---------- */
+function showTable() { $("#detailView").classList.add("hidden"); $("#tableView").classList.remove("hidden"); }
+$("#backBtn").onclick = () => { if (location.hash) location.hash = ""; else showTable(); };
+window.addEventListener("hashchange", () => { if (!location.hash) showTable(); });
+
+async function openApp(a) {
+  location.hash = "#/app/" + encodeURIComponent(a.app_key);
+  $("#tableView").classList.add("hidden");
+  $("#detailView").classList.remove("hidden");
+  window.scrollTo(0, 0);
+  $("#dhead").innerHTML = '<div class="dmeta"><h2 class="dtitle">' + esc(a.title) + "</h2><div class=\"dpkg\">loading assets\u2026</div></div>";
+  $("#dcc").innerHTML = ""; $("#dsec").textContent = ""; $("#assets").innerHTML = "";
+
+  const q = new URLSearchParams({ acct: advertiserId });
+  if (a.app_package) q.set("package", a.app_package);
+  else if (a.app_url) q.set("url", a.app_url);
+  else if (a.app_name) q.set("name", a.app_name);
+  else q.set("orphan", "1");
+  let data;
+  try { data = await api("/api/app?" + q); }
+  catch (e) { $("#dhead").innerHTML = '<div class="dmeta"><div class="dpkg">Couldn\'t load: ' + esc(e.message) + "</div></div>"; return; }
+
+  const app = data.app;
+  // merge freshest client-side meta (icon may have resolved after table load)
+  app.icon_url = app.icon_url || a.icon_url;
+  app.rating = app.rating != null ? app.rating : a.rating;
+  app.rating_count = app.rating_count != null ? app.rating_count : a.rating_count;
+  app.developer = app.developer || a.developer;
+  renderDetailHead(app);
+  const dlb = $("#dlApp");
+  if (dlb) dlb.onclick = () => downloadAssets(appDownloadParams(app), fileBase(app) + "-assets.zip", dlb);
+  const csvb = $("#csvApp");
+  if (csvb) csvb.onclick = () => exportCountriesCsv(app.countries || [], fileBase(app) + "-countries.csv");
+
+  const videos = data.videos || [];
+  $("#dsec").textContent = videos.length + " unique creative" + (videos.length === 1 ? "" : "s");
+  const prevPending = [], geoPending = [];
+  const frag = document.createDocumentFragment();
+  for (const v of videos) {
+    frag.appendChild(assetCard(v));
+    if (!v.preview_url && v.content_js_url) prevPending.push(v.id);
+    if (!v.detail_synced && !(v.countries && v.countries.length)) geoPending.push(v.id);
+  }
+  $("#assets").appendChild(frag);
+  // previews/geo load only when user opens this app (not on table load)
+  if (prevPending.length || geoPending.length) {
+    resolvePreviews(prevPending.slice(0, 6));
+    resolveDetailGeo(geoPending.slice(0, 6));
+  }
+}
+
+function renderDetailHead(app) {
+  $("#dhead").innerHTML =
+    (app.icon_url ? '<img class="dicon" src="' + esc(app.icon_url) + '" alt="" onerror="this.style.display=\'none\'">'
+                  : '<div class="dicon ph icon">' + esc(initials(app.title)) + "</div>") +
+    '<div class="dmeta">' +
+      '<h2 class="dtitle">' + esc(app.title) + "</h2>" +
+      (app.app_package ? '<div class="dpkg">' + esc(app.app_package) + "</div>" : "") +
+      '<div class="drow">' +
+        (app.rating != null ? '<span class="rating" style="font-size:13px">' + STAR + " " + app.rating + (app.rating_count ? " (" + fmtCount(app.rating_count) + " ratings)" : "") + "</span>" : "") +
+        (app.developer ? "<span>by <b>" + esc(app.developer) + "</b></span>" : "") +
+        (app.genre ? "<span>" + esc(app.genre) + "</span>" : "") +
+      "</div>" +
+      '<div class="drow">' +
+        '<span class="dstat"><b>' + app.video_count + "</b> videos</span>" +
+        '<span class="dstat"><b>' + app.creative_count + "</b> creatives</span>" +
+        '<span class="dstat">start <b>' + (app.first_seen || "?") + "</b></span>" +
+        '<span class="dstat">last <b>' + (app.last_seen || "?") + "</b></span>" +
+        '<span class="dstat"><b>' + (app.countries ? app.countries.length : 0) + "</b> countries</span>" +
+        (app.app_url ? '<a class="playbtn" href="' + esc(app.app_url) + '" target="_blank" rel="noopener">Google Play</a>' : "") +
+        '<button class="playbtn dl" id="dlApp">' + DL_ICON + " Download assets</button>" +
+        '<button class="playbtn dl" id="csvApp">' + DL_ICON + " Countries CSV</button>" +
+      "</div>" +
+    "</div>";
+  $("#dcc").innerHTML = app.countries && app.countries.length
+    ? '<div class="ccwrap">' + ccChips(app.countries, 60) + "</div>" : "";
+}
+
+function thumbHtml(c) {
+  if (c.preview_url)
+    return '<img loading="lazy" src="' + esc(c.preview_url) + '" alt="creative ' + esc(c.id) + '" onerror="imgFail(this)">';
+  return '<div class="noimg">' + (c.content_js_url ? "resolving\u2026" : "no preview") + "</div>";
+}
+function assetLinks(v) {
+  const urls = (v.asset_urls || []).filter((u) => /^https?:/.test(u));
+  const seen = new Set(), out = [];
+  for (const u of urls) {
+    if (seen.has(u)) continue; seen.add(u);
+    const isVid = /youtube\.com\/watch|\.mp4/i.test(u);
+    const label = isVid ? "\u25b6 video" : (/ytimg|simgad|googleusercontent|play-lh/.test(u) ? "image" : "link");
+    out.push('<a class="' + (isVid ? "vid" : "") + '" href="' + esc(u) + '" target="_blank" rel="noopener">' + label + "</a>");
+    if (out.length >= 6) break;
+  }
+  return out.length ? '<div class="assets">' + out.join("") + "</div>" : "";
+}
+function assetCard(v) {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.dataset.id = v.id;
+  const pageUrl = "https://adstransparency.google.com/advertiser/" + advertiserId + "/creative/" + v.id + "?region=anywhere";
+  const dupe = v.creative_ids && v.creative_ids.length > 1
+    ? '<span class="dupe" title="' + v.creative_ids.length + ' creatives share this video">' + TIMES + v.creative_ids.length + "</span>" : "";
+  card.innerHTML =
+    '<div class="thumb">' + thumbHtml(v) + "</div>" +
+    '<div class="cmeta"><span class="badge ' + v.format + '">' + v.format + "</span>" + dupe +
+      '<span class="cid" title="' + esc(v.id) + '">' + esc(v.id) + "</span>" +
+      '<button class="dlbtn" title="Download this creative\'s assets (zip)">' + DL_ICON + "</button>" +
+      '<a href="' + pageUrl + '" target="_blank" rel="noopener">open</a></div>' +
+    assetLinks(v) +
+    '<div class="dates"><span>' + (v.first_shown || "?") + " " + ARROW + " " + (v.last_shown || "?") + "</span>" +
+      (v.days_shown != null ? '<span class="days">' + v.days_shown + "d</span>" : "") + "</div>" +
+    '<div class="cgeo">' + (v.countries && v.countries.length ? geoHtml(v.countries)
+        : (v.detail_synced ? '<span class="geonone">no country data</span>' : '<span class="geoload">countries\u2026</span>')) + "</div>";
+  const b = card.querySelector(".dlbtn");
+  if (b) b.onclick = (e) => { e.stopPropagation(); downloadAssets(new URLSearchParams({ id: v.id }).toString(), v.id + "-assets.zip", b); };
+  return card;
+}
+function geoHtml(countries) {
+  if (!countries || !countries.length) return '<span class="geonone">no country data</span>';
+  return '<span class="geocount">' + countries.length + " countr" + (countries.length === 1 ? "y" : "ies") + "</span>" + ccChips(countries, 12);
+}
+
+async function resolvePreviews(ids) {
+  for (const id of ids) {
+    try {
+      const r = await api("/api/preview/" + encodeURIComponent(id));
+      const card = document.querySelector('#assets .card[data-id="' + CSS.escape(id) + '"]');
+      if (card) {
+        const t = card.querySelector(".thumb");
+        if (t) t.innerHTML = thumbHtml({ id, preview_url: r.preview_url });
+        if (r.asset_urls && r.asset_urls.length && !card.querySelector(".assets")) {
+          const links = assetLinks({ asset_urls: r.asset_urls });
+          if (links) card.querySelector(".cmeta").insertAdjacentHTML("afterend", links);
+        }
+      }
+    } catch (_) {
+      const t = document.querySelector('#assets .card[data-id="' + CSS.escape(id) + '"] .noimg');
+      if (t) t.textContent = "preview unavailable";
+    }
+  }
+}
+async function resolveDetailGeo(ids) {
+  for (const id of ids) {
+    const el = document.querySelector('#assets .card[data-id="' + CSS.escape(id) + '"] .cgeo');
+    try {
+      const r = await api("/api/geo/" + encodeURIComponent(id));
+      if (el) el.innerHTML = geoHtml(r.countries);
+    } catch (_) { if (el) el.innerHTML = '<span class="geonone">country data unavailable</span>'; }
+  }
+}
+
+/* ---------- boot: restore last advertiser id only (no auto API calls) ---------- */
+(function restore() {
+  const id = localStorage.getItem("last_adv");
+  if (!id) return;
+  if (!$("#advInput").value.trim()) $("#advInput").value = id;
+  advertiserId = id;
+})();
+</script>
+</body>
+</html>
