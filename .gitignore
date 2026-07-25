@@ -1,0 +1,4 @@
+.env
+curl.txt
+.scrape-cursor-*.json
+node_modules/

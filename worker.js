@@ -14,6 +14,7 @@ const LOOKUP_RPC = `${BASE}/anji/_/rpc/LookupService/GetCreativeById?authuser=0`
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:153.0) Gecko/20100101 Firefox/153.0";
 const FORMAT = { 1: "text", 2: "image", 3: "video" };
+const PAGE_SIZE = 40;
 
 // Google's transparency region codes = 2000 + ISO-3166-1 numeric. Map to name/cc.
 const ISO_NUM = Object.fromEntries(
@@ -86,7 +87,7 @@ async function searchCreativesRpc(advertiserId, cursor, env, token, extraHeaders
   // web/display/YouTube ads instead, which the filter hides entirely (0 results
   // even though ads exist). Omitting "14" returns creatives across all platforms.
   const body = {
-    "2": 20,
+    "2": PAGE_SIZE,
     "3": { "12": { "1": "", "2": true }, "13": { "1": [advertiserId] } },
     "7": { "1": 1, "2": 22, "3": 2356 },
   };
@@ -1379,6 +1380,7 @@ const HTML = `<!doctype html>
   <button id="autoScrapeBtn" class="ghost" title="Automatically fetch all pages (20 ads each, ~90s apart)">Auto scrape</button>
   <button id="loadBtn" class="ghost">Load apps</button>
   <button id="tokenBtn" class="ghost" title="Paste cURL from DevTools — auto-fills token and cookie">Paste curl</button>
+  <button id="downloadCurlBtn" class="ghost" title="Download curl.txt for scrape-local.mjs">Download curl.txt</button>
 </div>
 <p id="authHint" class="auth-hint hidden" role="status"></p>
 <div id="console" role="status"></div>
@@ -1392,6 +1394,7 @@ const HTML = `<!doctype html>
     <div id="curlStatus" class="modal-status"></div>
     <div class="modal-actions">
       <button id="curlSave">Save credentials</button>
+      <button id="curlDownload" class="ghost">Download curl.txt</button>
       <button id="curlClear" class="ghost">Clear saved</button>
       <button id="curlClose" class="ghost">Cancel</button>
     </div>
@@ -1442,6 +1445,7 @@ const HTML = `<!doctype html>
 
 <script>
 const $ = (s) => document.querySelector(s);
+const PAGE_SIZE = 40;
 
 /* ---------- worker URL + auth ---------- */
 function workerBase() {
@@ -1580,6 +1584,45 @@ $("#tokenBtn").onclick = () => openCurlModal();
 $("#curlClose").onclick = closeCurlModal;
 $("#curlModal").onclick = (e) => { if (e.target === $("#curlModal")) closeCurlModal(); };
 $("#curlSave").onclick = () => { if (saveFromCurl()) setTimeout(closeCurlModal, 1400); };
+
+function buildCurlExport() {
+  const token = localStorage.getItem("xsrf_token");
+  const cookie = localStorage.getItem("transparency_cookie");
+  const ua = localStorage.getItem("google_ua") ||
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:153.0) Gecko/20100101 Firefox/153.0";
+  if (!token || !cookie) return null;
+  const sh = (s) => String(s).replace(/'/g, "'\\\\''");
+  return [
+    "curl 'https://adstransparency.google.com/anji/_/rpc/SearchService/SearchCreatives?authuser=0' \\\\",
+    "  -X POST \\\\",
+    "  -H 'accept: */*' \\\\",
+    "  -H 'content-type: application/x-www-form-urlencoded' \\\\",
+    "  -H 'x-same-domain: 1' \\\\",
+    "  -H 'origin: https://adstransparency.google.com' \\\\",
+    "  -H 'referer: https://adstransparency.google.com/' \\\\",
+    "  -H 'X-Framework-Xsrf-Token: " + sh(token) + "' \\\\",
+    "  -H 'Cookie: " + sh(cookie) + "' \\\\",
+    "  -H 'User-Agent: " + sh(ua) + "' \\\\",
+    "  --data-raw 'f.req=%7B%7D'",
+  ].join("\\n");
+}
+
+function downloadCurlTxt() {
+  const curl = buildCurlExport();
+  if (!curl) {
+    alert("Save credentials first: Paste curl from DevTools → Save credentials.");
+    return;
+  }
+  const blob = new Blob([curl], { type: "text/plain" });
+  const u = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = u; a.download = "curl.txt"; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(u), 2000);
+}
+
+$("#downloadCurlBtn").onclick = downloadCurlTxt;
+$("#curlDownload").onclick = downloadCurlTxt;
+
 $("#curlClear").onclick = () => {
   localStorage.removeItem("xsrf_token");
   localStorage.removeItem("transparency_cookie");
