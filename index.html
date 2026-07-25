@@ -140,7 +140,6 @@
   .modal-status{min-height:20px;margin:10px 0 0;font:500 12px "IBM Plex Mono",monospace;color:var(--ok)}
   .modal-status.bad{color:var(--bad)}
   .modal-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
-  .modal-steps{margin:0 0 12px;padding-left:20px;font-size:13px;color:var(--ink-soft);line-height:1.6}
   .auth-hint{margin:0 32px;padding:10px 14px;background:#fff8e6;border:1px solid #f0d080;border-radius:var(--radius);font:500 13px Inter;color:#6b4e00}
   .auth-hint.ok{background:#eef7ef;border-color:#a8d5b8;color:var(--ok)}
   @media (prefers-reduced-motion:no-preference){.card{transition:transform .12s ease}.card:hover{transform:translateY(-2px)}}
@@ -161,32 +160,12 @@
   <input id="advInput" type="text"
     placeholder="Paste advertiser URL or ID &mdash; e.g. AR02377450198621224961" aria-label="Advertiser URL or ID">
   <button id="syncBtn">Sync ads</button>
-  <button id="browserSyncBtn" class="ghost" title="Fetch from your browser (avoids worker 429)">Browser sync</button>
+  <button id="autoScrapeBtn" class="ghost" title="Automatically fetch all pages (20 ads each, ~90s apart)">Auto scrape</button>
   <button id="loadBtn" class="ghost">Load apps</button>
   <button id="tokenBtn" class="ghost" title="Paste cURL from DevTools — auto-fills token and cookie">Paste curl</button>
 </div>
 <p id="authHint" class="auth-hint hidden" role="status"></p>
 <div id="console" role="status"></div>
-
-<div id="browserSyncModal" class="modal hidden" role="dialog" aria-labelledby="browserSyncTitle" aria-modal="true">
-  <div class="modal-box">
-    <h2 id="browserSyncTitle">Browser sync (avoids 429)</h2>
-    <p class="modal-hint">Google rate-limits Cloudflare Worker IPs. This runs the Google fetch <b>from your browser</b> (same as DevTools), then sends results to Supabase.</p>
-    <ol class="modal-steps">
-      <li>Keep this dashboard tab open.</li>
-      <li>Click <b>Open Google tab</b> (must use this button — links back here).</li>
-      <li>On the Google tab: DevTools → Console → paste script → Enter.</li>
-      <li>Results save automatically on this tab.</li>
-    </ol>
-    <textarea id="browserSyncScript" rows="12" spellcheck="false" readonly aria-label="Browser sync script"></textarea>
-    <div id="browserSyncStatus" class="modal-status"></div>
-    <div class="modal-actions">
-      <button id="browserSyncOpen">Open Google tab</button>
-      <button id="browserSyncCopy">Copy script</button>
-      <button id="browserSyncClose" class="ghost">Close</button>
-    </div>
-  </div>
-</div>
 
 <div id="curlModal" class="modal hidden" role="dialog" aria-labelledby="curlTitle" aria-modal="true">
   <div class="modal-box">
@@ -232,7 +211,7 @@
       </tr></thead>
       <tbody id="appBody"></tbody>
     </table>
-    <div class="empty" id="empty">1) Paste curl (token + cookie) &nbsp; 2) Browser sync or Sync ads (20/page) &nbsp; 3) Load apps</div>
+    <div class="empty" id="empty">1) Paste curl (token + cookie) &nbsp; 2) Sync ads or Auto scrape &nbsp; 3) Load apps</div>
   </div>
 </section>
 
@@ -327,7 +306,7 @@ function hasCredentials() {
 function updateAuthHint() {
   const el = $("#authHint");
   if (hasCredentials()) {
-    el.textContent = "Credentials saved. Prefer Browser sync if worker Sync hits 429.";
+    el.textContent = "Credentials saved (token + cookie). Paste curl again if sync fails with 403/429.";
     el.className = "auth-hint ok";
   } else {
     el.textContent = "Required before sync: click Paste curl and save a SearchCreatives cURL from DevTools. Google blocks the worker without your browser session.";
@@ -395,64 +374,14 @@ $("#curlClear").onclick = () => {
 };
 updateAuthBtn();
 
-/* ---------- browser sync (avoids worker IP 429) ---------- */
-let browserSyncPopup = null;
-
-function buildBrowserSyncScript(id, cursor) {
-  const cfg = {
-    id,
-    cursor: cursor || null,
-    token: localStorage.getItem("xsrf_token") || "",
-  };
-  return `(async()=>{
-  const cfg=${JSON.stringify(cfg)};
-  const log=(m)=>console.log("[ggle sync]",m);
-  const RPC="https://adstransparency.google.com/anji/_/rpc/SearchService/SearchCreatives?authuser=0";
-  const xsrf=(()=>{
-    try{if(window.WIZ_global_data?.SNlM0e)return window.WIZ_global_data.SNlM0e;}catch(_){}
-    const h=document.documentElement.innerHTML;
-    for(const re of[/"SNlM0e":"([^"]+)"/,/"FdrFJe":"([^"]+)"/,/xsrfToken['":\\s]+(['"])([^'"]+)\\2/i]){const m=h.match(re);if(m)return m[m.length-1];}
-    return cfg.token||null;
-  })();
-  if(!xsrf)throw new Error("No XSRF token on this page. Reload, scroll the ad list once, or paste a fresh SearchCreatives cURL in the dashboard.");
-  if(!window.opener)throw new Error("Open this tab via Browser sync → Open Google tab on the dashboard (so it can receive results).");
-  const body={"2":20,"3":{"12":{"1":"","2":true},"13":{"1":[cfg.id]}},"7":{"1":1,"2":22,"3":2356}};
-  if(cfg.cursor)body["4"]=cfg.cursor;
-  log("Fetching SearchCreatives for "+cfg.id+"…");
-  const ctrl=new AbortController();
-  const t=setTimeout(()=>ctrl.abort(),90000);
-  let gr,text;
-  try{
-    gr=await fetch(RPC,{method:"POST",credentials:"include",signal:ctrl.signal,headers:{"Content-Type":"application/x-www-form-urlencoded","X-Same-Domain":"1","X-Framework-Xsrf-Token":xsrf,Origin:"https://adstransparency.google.com",Referer:location.href},body:"f.req="+encodeURIComponent(JSON.stringify(body))});
-    text=await gr.text();
-  }finally{clearTimeout(t);}
-  log("Google HTTP "+gr.status+", "+text.length+" bytes");
-  if(!gr.ok)throw new Error("Google HTTP "+gr.status+(gr.status===429?" (rate limit — wait 1 min, reload page)":""));
-  if(text.includes("google.com/sorry"))throw new Error("Google captcha/rate-limit page — wait 2 min, reload, try again.");
-  log("Sending to dashboard tab…");
-  window.opener.postMessage({type:"ggle-sync-raw",id:cfg.id,google_response:text},"*");
-  alert("Fetched "+text.length+" bytes — saving via dashboard. Check the Creative Light Table tab.");
-})().catch(e=>{console.error("[ggle sync]",e);alert("Sync failed: "+e.message);});`;
-}
-
-function openBrowserSyncModal(id, cursor) {
-  $("#browserSyncScript").value = buildBrowserSyncScript(id, cursor);
-  $("#browserSyncStatus").textContent = cursor
-    ? "Continuing from saved cursor (page 2+)."
-    : "Starting from beginning (no cursor).";
-  $("#browserSyncStatus").className = "modal-status";
-  $("#browserSyncModal").classList.remove("hidden");
-}
-
-function closeBrowserSyncModal() {
-  $("#browserSyncModal").classList.add("hidden");
-}
-
-function openGoogleTab(id) {
-  const url = "https://adstransparency.google.com/advertiser/" + encodeURIComponent(id) + "?region=anywhere&hl=en";
-  browserSyncPopup = window.open(url, "ggle_browser_sync", "width=960,height=720");
-  if (!browserSyncPopup) $("#browserSyncStatus").textContent = "Popup blocked — allow popups, or open the URL manually.";
-}
+/* ---------- sync / scrape ---------- */
+let sessPages = 0, sessTotal = 0;
+let lastSyncAt = 0;
+let autoScrapeRunning = false;
+let autoScrapeStop = false;
+const MIN_SYNC_GAP_MS = 90000;
+const AUTO_PAGE_DELAY_MS = 90000;
+const AUTO_RATE_LIMIT_MS = 180000;
 
 function applySyncResult(r, id) {
   lastSyncAt = Date.now();
@@ -467,7 +396,7 @@ function applySyncResult(r, id) {
   if (r.next_cursor) {
     localStorage.setItem("cursor:" + id, r.next_cursor);
     $("#syncBtn").textContent = "Fetch next 20";
-    box.innerHTML += "<span>stored " + r.fetched + " ads — click Fetch next 20 (opens Browser sync) for page 2+</span>";
+    box.innerHTML += "<span>stored " + r.fetched + " ads — click Fetch next 20 or Auto scrape</span>";
   } else {
     localStorage.removeItem("cursor:" + id);
     $("#syncBtn").textContent = "Sync ads";
@@ -477,68 +406,137 @@ function applySyncResult(r, id) {
   }
 }
 
-window.addEventListener("message", async (e) => {
-  if (!e.data) return;
-  if (e.data.type === "ggle-sync-raw") {
-    const id = e.data.id || advertiserId;
-    if (!id) return;
-    $("#browserSyncStatus").textContent = "Saving " + id + " to Supabase…";
-    $("#browserSyncStatus").className = "modal-status";
-    try {
-      const j = await api("/api/sync-ingest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ advertiser_id: id, google_response: e.data.google_response }),
-      });
-      applySyncResult(j, id);
-      closeBrowserSyncModal();
-      $("#browserSyncStatus").textContent = "Saved " + j.fetched + " ads from browser tab.";
-    } catch (err) {
-      $("#browserSyncStatus").textContent = "Save failed: " + err.message;
-      $("#browserSyncStatus").className = "modal-status bad";
-      alert("Dashboard save failed: " + err.message);
+async function syncPageOnce(id, cursor) {
+  return api("/api/sync-page", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ advertiser_id: id, cursor }),
+  });
+}
+
+async function waitCountdown(ms, label, box, id) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (autoScrapeStop) throw new Error("Scrape stopped.");
+    const left = Math.ceil((end - Date.now()) / 1000);
+    box.className = "on";
+    box.innerHTML =
+      '<span class="dot">SCRAPE ' + esc(id) + "</span>" +
+      "<span>" + esc(label) + " " + left + "s</span>" +
+      "<span>click Stop scrape to cancel</span>";
+    await sleep(1000);
+  }
+}
+
+async function runAutoScrape(id) {
+  autoScrapeRunning = true;
+  autoScrapeStop = false;
+  $("#autoScrapeBtn").textContent = "Stop scrape";
+  $("#syncBtn").disabled = true;
+  const box = $("#console");
+  box.className = "on";
+  let cursor = localStorage.getItem("cursor:" + id) || null;
+  if (sessPages === 0 && cursor && !confirm("Continue previous sync from saved position? (Cancel = start over)")) {
+    cursor = null;
+    localStorage.removeItem("cursor:" + id);
+    sessPages = 0;
+    sessTotal = 0;
+  }
+  try {
+    while (!autoScrapeStop) {
+      if (cursor && lastSyncAt) await waitCountdown(AUTO_PAGE_DELAY_MS, "Next page in", box, id);
+      box.innerHTML =
+        '<span class="dot">SCRAPE ' + esc(id) + "</span>" +
+        "<span>fetching page " + String(sessPages + 1) + "…</span>";
+      let r;
+      try {
+        r = await syncPageOnce(id, cursor);
+      } catch (e) {
+        if (/429|rate limit/i.test(e.message)) {
+          await waitCountdown(AUTO_RATE_LIMIT_MS, "Rate limited — retry in", box, id);
+          continue;
+        }
+        throw e;
+      }
+      applySyncResult(r, id);
+      cursor = r.next_cursor || null;
+      if (!cursor) break;
     }
+  } finally {
+    autoScrapeRunning = false;
+    autoScrapeStop = false;
+    $("#autoScrapeBtn").textContent = "Auto scrape";
+    $("#syncBtn").disabled = false;
+  }
+}
+
+function setSyncProgress(box, id, sec) {
+  box.innerHTML =
+    '<span class="dot">SYNC ' + esc(id) + "</span>" +
+    "<span>fetching from Google… " + sec + "s</span>";
+}
+
+$("#syncBtn").onclick = async () => {
+  const id = extractId($("#advInput").value.trim());
+  if (!id) return alert("Could not find an AR... advertiser ID in that input.");
+  if (!hasCredentials()) {
+    openCurlModal("Paste a SearchCreatives cURL first. Google blocks the worker without your browser token + cookie.");
     return;
   }
-  if (e.data.type !== "ggle-sync-done") return;
-  const r = e.data.result;
-  if (!r || !advertiserId) return;
-  applySyncResult(r, advertiserId);
-  closeBrowserSyncModal();
-  $("#browserSyncStatus").textContent = "Received " + r.fetched + " ads from browser tab.";
-  $("#browserSyncStatus").className = "modal-status";
-});
-
-$("#browserSyncBtn").onclick = () => {
-  const id = extractId($("#advInput").value.trim());
-  if (!id) return alert("Paste the advertiser URL or ID first.");
+  if (autoScrapeRunning) return alert("Auto scrape is running — stop it first or wait.");
   if (advertiserId !== id) { advertiserId = id; sessPages = 0; sessTotal = 0; }
   localStorage.setItem("last_adv", id);
-  const cursor = localStorage.getItem("cursor:" + id) || null;
-  openBrowserSyncModal(id, cursor);
-};
 
-$("#browserSyncOpen").onclick = () => {
-  const id = extractId($("#advInput").value.trim());
-  if (!id) return alert("Advertiser ID required.");
-  openGoogleTab(id);
-};
+  const gap = Date.now() - lastSyncAt;
+  if (lastSyncAt && gap < MIN_SYNC_GAP_MS) {
+    const waitSec = Math.ceil((MIN_SYNC_GAP_MS - gap) / 1000);
+    return alert("Please wait " + waitSec + "s between sync taps (Google rate limit).");
+  }
 
-$("#browserSyncCopy").onclick = async () => {
-  const script = $("#browserSyncScript").value;
+  const box = $("#console");
+  box.className = "on";
+  let cursor = localStorage.getItem("cursor:" + id) || null;
+  if (sessPages === 0 && cursor && !confirm("Continue previous sync from saved position? (Cancel = start over)")) {
+    cursor = null; localStorage.removeItem("cursor:" + id);
+  }
+
+  $("#syncBtn").disabled = true;
+  const syncT0 = Date.now();
+  const syncTimer = setInterval(() => setSyncProgress(box, id, Math.floor((Date.now() - syncT0) / 1000)), 1000);
   try {
-    await navigator.clipboard.writeText(script);
-    $("#browserSyncStatus").textContent = "Script copied — paste in the Google tab console.";
-    $("#browserSyncStatus").className = "modal-status";
-  } catch (_) {
-    $("#browserSyncScript").select();
-    document.execCommand("copy");
-    $("#browserSyncStatus").textContent = "Script copied (fallback).";
+    const r = await syncPageOnce(id, cursor);
+    applySyncResult(r, id);
+  } catch (e) {
+    box.classList.add("failed");
+    box.innerHTML =
+      '<span class="dot">SYNC ' + esc(id) + "</span>" +
+      "<span>failed: " + esc(e.message) + "</span>";
+    if (/429|rate limit/i.test(e.message)) {
+      box.innerHTML += "<span>Wait 2–3 min, paste a fresh cURL, then try Auto scrape.</span>";
+    }
+    if (/xsrf|403/i.test(e.message)) {
+      openCurlModal("Google needs fresh credentials — paste a new SearchCreatives cURL from DevTools:");
+    }
+  } finally {
+    clearInterval(syncTimer);
+    $("#syncBtn").disabled = false;
   }
 };
 
-$("#browserSyncClose").onclick = closeBrowserSyncModal;
-$("#browserSyncModal").onclick = (e) => { if (e.target === $("#browserSyncModal")) closeBrowserSyncModal(); };
+$("#autoScrapeBtn").onclick = async () => {
+  if (autoScrapeRunning) {
+    autoScrapeStop = true;
+    return;
+  }
+  const id = extractId($("#advInput").value.trim());
+  if (!id) return alert("Paste the advertiser URL or ID first.");
+  if (!hasCredentials()) {
+    openCurlModal("Paste a SearchCreatives cURL first.");
+    return;
+  }
+  if (advertiserId !== id) { advertiserId = id; sessPages = 0; sessTotal = 0; }
+  localStorage.setItem("last_adv", id);
+  await runAutoScrape(id);
+};
 
 async function api(path, opts = {}) {
   opts.headers = authHeaders(opts.headers);
@@ -649,86 +647,6 @@ let resolvingPrev = false;     // batch preview-resolution in progress
 // default: newest last_seen first (matches API); click header to toggle
 let sortKey = "last_seen", sortDir = "desc";
 const countryNames = new Map(); // cc -> name (for the filter dropdown)
-
-/* ---------- manual sync (one page of 20 per tap) ---------- */
-let sessPages = 0, sessTotal = 0;
-let lastSyncAt = 0;
-const MIN_SYNC_GAP_MS = 120000;
-
-async function syncPageOnce(id, cursor) {
-  return api("/api/sync-page", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ advertiser_id: id, cursor }),
-  });
-}
-
-function offerBrowserSync(id, cursor, reason) {
-  const box = $("#console");
-  box.classList.add("failed");
-  box.innerHTML =
-    '<span class="dot">SYNC ' + esc(id) + "</span>" +
-    "<span>" + esc(reason) + "</span>" +
-    "<span>Tip: click <b>Browser sync</b> — uses your IP, not Cloudflare.</span>";
-  openBrowserSyncModal(id, cursor);
-}
-
-$("#syncBtn").onclick = async () => {
-  const id = extractId($("#advInput").value.trim());
-  if (!id) return alert("Could not find an AR... advertiser ID in that input.");
-  if (!hasCredentials()) {
-    openCurlModal("Paste a SearchCreatives cURL first. Google blocks the worker without your browser token + cookie.");
-    return;
-  }
-  if (advertiserId !== id) { advertiserId = id; sessPages = 0; sessTotal = 0; }
-  localStorage.setItem("last_adv", id);
-
-  const gap = Date.now() - lastSyncAt;
-  if (lastSyncAt && gap < MIN_SYNC_GAP_MS) {
-    const waitSec = Math.ceil((MIN_SYNC_GAP_MS - gap) / 1000);
-    return alert("Please wait " + waitSec + "s between sync taps, or use Browser sync instead.");
-  }
-
-  const box = $("#console");
-  box.className = "on";
-  let cursor = localStorage.getItem("cursor:" + id) || null;
-  if (sessPages === 0 && cursor && !confirm("Continue previous sync from saved position? (Cancel = start over)")) {
-    cursor = null; localStorage.removeItem("cursor:" + id);
-  }
-  // Paginated fetches (page 2+) hit worker 429 — use browser sync instead.
-  if (cursor) {
-    offerBrowserSync(id, cursor, "Next page — use Browser sync (worker hangs on page 2+ due to Google 429).");
-    return;
-  }
-
-  $("#syncBtn").disabled = true;
-  const syncT0 = Date.now();
-  const syncTimer = setInterval(() => {
-    const sec = Math.floor((Date.now() - syncT0) / 1000);
-    box.innerHTML =
-      '<span class="dot">SYNC ' + esc(id) + "</span>" +
-      "<span>fetching from Google… " + sec + "s</span>" +
-      "<span>if this takes &gt;15s, cancel and use Browser sync</span>";
-  }, 1000);
-  try {
-    const r = await syncPageOnce(id, cursor);
-    applySyncResult(r, id);
-  } catch (e) {
-    if (/429|rate limit|worker IP/i.test(e.message)) {
-      offerBrowserSync(id, cursor, e.message);
-    } else {
-      box.classList.add("failed");
-      box.innerHTML =
-        '<span class="dot">SYNC ' + esc(id) + "</span>" +
-        "<span>failed: " + esc(e.message) + "</span>";
-      if (/xsrf|403/i.test(e.message)) {
-        openCurlModal("Google needs fresh credentials — paste a new SearchCreatives cURL from DevTools:");
-      }
-    }
-  } finally {
-    clearInterval(syncTimer);
-    $("#syncBtn").disabled = false;
-  }
-};
 
 $("#loadBtn").onclick = () => {
   const id = extractId($("#advInput").value.trim());
