@@ -173,9 +173,10 @@
     <h2 id="browserSyncTitle">Browser sync (avoids 429)</h2>
     <p class="modal-hint">Google rate-limits Cloudflare Worker IPs. This runs the Google fetch <b>from your browser</b> (same as DevTools), then sends results to Supabase.</p>
     <ol class="modal-steps">
-      <li>Click <b>Open Google tab</b> below (log in if needed).</li>
-      <li>On that tab: DevTools → Console → paste the script → Enter.</li>
-      <li>Return here — progress updates automatically.</li>
+      <li>Keep this dashboard tab open.</li>
+      <li>Click <b>Open Google tab</b> (must use this button — links back here).</li>
+      <li>On the Google tab: DevTools → Console → paste script → Enter.</li>
+      <li>Results save automatically on this tab.</li>
     </ol>
     <textarea id="browserSyncScript" rows="12" spellcheck="false" readonly aria-label="Browser sync script"></textarea>
     <div id="browserSyncStatus" class="modal-status"></div>
@@ -399,28 +400,39 @@ let browserSyncPopup = null;
 
 function buildBrowserSyncScript(id, cursor) {
   const cfg = {
-    worker: workerBase(),
     id,
     cursor: cursor || null,
     token: localStorage.getItem("xsrf_token") || "",
-    key: localStorage.getItem("dash_key") || "",
   };
   return `(async()=>{
   const cfg=${JSON.stringify(cfg)};
+  const log=(m)=>console.log("[ggle sync]",m);
   const RPC="https://adstransparency.google.com/anji/_/rpc/SearchService/SearchCreatives?authuser=0";
-  const xsrf=(()=>{const h=document.documentElement.innerHTML;for(const re of[/SNlM0e\\":\\"([^"]+)\\"/,/xsrfToken['":\\s]+(['"])([^'"]+)\\2/i]){const m=h.match(re);if(m)return m[m.length-1];}return cfg.token;})();
+  const xsrf=(()=>{
+    try{if(window.WIZ_global_data?.SNlM0e)return window.WIZ_global_data.SNlM0e;}catch(_){}
+    const h=document.documentElement.innerHTML;
+    for(const re of[/"SNlM0e":"([^"]+)"/,/"FdrFJe":"([^"]+)"/,/xsrfToken['":\\s]+(['"])([^'"]+)\\2/i]){const m=h.match(re);if(m)return m[m.length-1];}
+    return cfg.token||null;
+  })();
+  if(!xsrf)throw new Error("No XSRF token on this page. Reload, scroll the ad list once, or paste a fresh SearchCreatives cURL in the dashboard.");
+  if(!window.opener)throw new Error("Open this tab via Browser sync → Open Google tab on the dashboard (so it can receive results).");
   const body={"2":20,"3":{"12":{"1":"","2":true},"13":{"1":[cfg.id]}},"7":{"1":1,"2":22,"3":2356}};
   if(cfg.cursor)body["4"]=cfg.cursor;
-  const gr=await fetch(RPC,{method:"POST",credentials:"include",headers:{"Content-Type":"application/x-www-form-urlencoded","X-Same-Domain":"1","X-Framework-Xsrf-Token":xsrf,Origin:"https://adstransparency.google.com",Referer:location.href},body:"f.req="+encodeURIComponent(JSON.stringify(body))});
-  const text=await gr.text();
-  if(!gr.ok)throw new Error("Google HTTP "+gr.status+(gr.status===429?" (rate limit — wait 1 min)":""));
-  const ir=await fetch(cfg.worker+"/api/sync-ingest",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+cfg.key},body:JSON.stringify({advertiser_id:cfg.id,google_response:text})});
-  const j=await ir.json();
-  if(!ir.ok)throw new Error(j.error||ir.status);
-  const msg="Synced "+j.fetched+" ads"+(j.next_cursor?" — more pages available":" — complete");
-  if(window.opener)window.opener.postMessage({type:"ggle-sync-done",result:j},"*");
-  alert(msg+"\\nReturn to Creative Light Table.");
-})().catch(e=>alert("Sync failed: "+e.message));`;
+  log("Fetching SearchCreatives for "+cfg.id+"…");
+  const ctrl=new AbortController();
+  const t=setTimeout(()=>ctrl.abort(),90000);
+  let gr,text;
+  try{
+    gr=await fetch(RPC,{method:"POST",credentials:"include",signal:ctrl.signal,headers:{"Content-Type":"application/x-www-form-urlencoded","X-Same-Domain":"1","X-Framework-Xsrf-Token":xsrf,Origin:"https://adstransparency.google.com",Referer:location.href},body:"f.req="+encodeURIComponent(JSON.stringify(body))});
+    text=await gr.text();
+  }finally{clearTimeout(t);}
+  log("Google HTTP "+gr.status+", "+text.length+" bytes");
+  if(!gr.ok)throw new Error("Google HTTP "+gr.status+(gr.status===429?" (rate limit — wait 1 min, reload page)":""));
+  if(text.includes("google.com/sorry"))throw new Error("Google captcha/rate-limit page — wait 2 min, reload, try again.");
+  log("Sending to dashboard tab…");
+  window.opener.postMessage({type:"ggle-sync-raw",id:cfg.id,google_response:text},"*");
+  alert("Fetched "+text.length+" bytes — saving via dashboard. Check the Creative Light Table tab.");
+})().catch(e=>{console.error("[ggle sync]",e);alert("Sync failed: "+e.message);});`;
 }
 
 function openBrowserSyncModal(id, cursor) {
@@ -463,8 +475,30 @@ function applySyncResult(r, id) {
   }
 }
 
-window.addEventListener("message", (e) => {
-  if (!e.data || e.data.type !== "ggle-sync-done") return;
+window.addEventListener("message", async (e) => {
+  if (!e.data) return;
+  if (e.data.type === "ggle-sync-raw") {
+    const id = e.data.id || advertiserId;
+    if (!id) return;
+    $("#browserSyncStatus").textContent = "Saving " + id + " to Supabase…";
+    $("#browserSyncStatus").className = "modal-status";
+    try {
+      const j = await api("/api/sync-ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ advertiser_id: id, google_response: e.data.google_response }),
+      });
+      applySyncResult(j, id);
+      closeBrowserSyncModal();
+      $("#browserSyncStatus").textContent = "Saved " + j.fetched + " ads from browser tab.";
+    } catch (err) {
+      $("#browserSyncStatus").textContent = "Save failed: " + err.message;
+      $("#browserSyncStatus").className = "modal-status bad";
+      alert("Dashboard save failed: " + err.message);
+    }
+    return;
+  }
+  if (e.data.type !== "ggle-sync-done") return;
   const r = e.data.result;
   if (!r || !advertiserId) return;
   applySyncResult(r, advertiserId);
