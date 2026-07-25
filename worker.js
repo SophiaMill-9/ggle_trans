@@ -166,44 +166,26 @@ async function storeSyncPage(env, advertiserId, page) {
 }
 
 async function fetchPage(advertiserId, cursor, env, tokenOverride, extraHeaders = {}) {
-  // Warm session: hit the advertiser HTML page first (same as a real browser visit).
-  try {
-    await fetchAdvertiserPage(advertiserId, env);
-  } catch (_) {}
-
-  const token = tokenOverride || env.XSRF_TOKEN || null;
-  const retryDelays = [0, 45000, 90000];
-  let lastRes = null;
-
-  for (let attempt = 0; attempt < retryDelays.length; attempt++) {
-    if (retryDelays[attempt] > 0) await sleep(retryDelays[attempt]);
-    const res = await rpcOnce(advertiserId, cursor, env, token, extraHeaders);
-    lastRes = res;
-    if (res.status === 429) {
-      const waitMs = parseRetryAfterMs(res) ?? retryDelays[attempt + 1] ?? 120000;
-      if (attempt < retryDelays.length - 1) {
-        await sleep(waitMs);
-        continue;
-      }
-      throw new Error(
-        "Google rate limit (429) from worker IP. Use Browser sync — it fetches from your machine and avoids Cloudflare throttling."
-      );
-    }
-    if (!res.ok) {
-      throw new Error(res.status === 403
-        ? "Google refused the request (403) - refresh the Token, or this IP may be blocked"
-        : `SearchCreatives HTTP ${res.status}`);
-    }
-    const text = await res.text();
-    return parseSearchCreativesResponse(text);
+  // Warm session only on the first page — paginated fetches skip it to save time.
+  if (!cursor) {
+    try {
+      await fetchAdvertiserPage(advertiserId, env);
+    } catch (_) {}
   }
 
-  if (lastRes?.status === 429) {
+  const res = await rpcOnce(advertiserId, cursor, env, tokenOverride, extraHeaders);
+  if (res.status === 429) {
     throw new Error(
-      "Google rate limit (429) from worker IP. Use Browser sync — it fetches from your machine and avoids Cloudflare throttling."
+      "Google rate limit (429) from worker IP. Use Browser sync for the next page — worker cannot paginate reliably."
     );
   }
-  throw new Error(`SearchCreatives HTTP ${lastRes?.status || "unknown"}`);
+  if (!res.ok) {
+    throw new Error(res.status === 403
+      ? "Google refused the request (403) - refresh the Token, or this IP may be blocked"
+      : `SearchCreatives HTTP ${res.status}`);
+  }
+  const text = await res.text();
+  return parseSearchCreativesResponse(text);
 }
 
 const epochToDate = (t) => {
@@ -1693,7 +1675,9 @@ function buildBrowserSyncScript(id, cursor) {
 
 function openBrowserSyncModal(id, cursor) {
   $("#browserSyncScript").value = buildBrowserSyncScript(id, cursor);
-  $("#browserSyncStatus").textContent = "";
+  $("#browserSyncStatus").textContent = cursor
+    ? "Continuing from saved cursor (page 2+)."
+    : "Starting from beginning (no cursor).";
   $("#browserSyncStatus").className = "modal-status";
   $("#browserSyncModal").classList.remove("hidden");
 }
@@ -1721,7 +1705,7 @@ function applySyncResult(r, id) {
   if (r.next_cursor) {
     localStorage.setItem("cursor:" + id, r.next_cursor);
     $("#syncBtn").textContent = "Fetch next 20";
-    box.innerHTML += "<span>stored " + r.fetched + " ads — click Fetch next 20 or Browser sync for next page</span>";
+    box.innerHTML += "<span>stored " + r.fetched + " ads — click Fetch next 20 (opens Browser sync) for page 2+</span>";
   } else {
     localStorage.removeItem("cursor:" + id);
     $("#syncBtn").textContent = "Sync ads";
@@ -1948,7 +1932,21 @@ $("#syncBtn").onclick = async () => {
   if (sessPages === 0 && cursor && !confirm("Continue previous sync from saved position? (Cancel = start over)")) {
     cursor = null; localStorage.removeItem("cursor:" + id);
   }
+  // Paginated fetches (page 2+) hit worker 429 — use browser sync instead.
+  if (cursor) {
+    offerBrowserSync(id, cursor, "Next page — use Browser sync (worker hangs on page 2+ due to Google 429).");
+    return;
+  }
+
   $("#syncBtn").disabled = true;
+  const syncT0 = Date.now();
+  const syncTimer = setInterval(() => {
+    const sec = Math.floor((Date.now() - syncT0) / 1000);
+    box.innerHTML =
+      '<span class="dot">SYNC ' + esc(id) + "</span>" +
+      "<span>fetching from Google… " + sec + "s</span>" +
+      "<span>if this takes &gt;15s, cancel and use Browser sync</span>";
+  }, 1000);
   try {
     const r = await syncPageOnce(id, cursor);
     applySyncResult(r, id);
@@ -1964,8 +1962,10 @@ $("#syncBtn").onclick = async () => {
         openCurlModal("Google needs fresh credentials — paste a new SearchCreatives cURL from DevTools:");
       }
     }
+  } finally {
+    clearInterval(syncTimer);
+    $("#syncBtn").disabled = false;
   }
-  $("#syncBtn").disabled = false;
 };
 
 $("#loadBtn").onclick = () => {

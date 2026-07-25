@@ -437,7 +437,9 @@ function buildBrowserSyncScript(id, cursor) {
 
 function openBrowserSyncModal(id, cursor) {
   $("#browserSyncScript").value = buildBrowserSyncScript(id, cursor);
-  $("#browserSyncStatus").textContent = "";
+  $("#browserSyncStatus").textContent = cursor
+    ? "Continuing from saved cursor (page 2+)."
+    : "Starting from beginning (no cursor).";
   $("#browserSyncStatus").className = "modal-status";
   $("#browserSyncModal").classList.remove("hidden");
 }
@@ -465,7 +467,7 @@ function applySyncResult(r, id) {
   if (r.next_cursor) {
     localStorage.setItem("cursor:" + id, r.next_cursor);
     $("#syncBtn").textContent = "Fetch next 20";
-    box.innerHTML += "<span>stored " + r.fetched + " ads — click Fetch next 20 or Browser sync for next page</span>";
+    box.innerHTML += "<span>stored " + r.fetched + " ads — click Fetch next 20 (opens Browser sync) for page 2+</span>";
   } else {
     localStorage.removeItem("cursor:" + id);
     $("#syncBtn").textContent = "Sync ads";
@@ -692,7 +694,21 @@ $("#syncBtn").onclick = async () => {
   if (sessPages === 0 && cursor && !confirm("Continue previous sync from saved position? (Cancel = start over)")) {
     cursor = null; localStorage.removeItem("cursor:" + id);
   }
+  // Paginated fetches (page 2+) hit worker 429 — use browser sync instead.
+  if (cursor) {
+    offerBrowserSync(id, cursor, "Next page — use Browser sync (worker hangs on page 2+ due to Google 429).");
+    return;
+  }
+
   $("#syncBtn").disabled = true;
+  const syncT0 = Date.now();
+  const syncTimer = setInterval(() => {
+    const sec = Math.floor((Date.now() - syncT0) / 1000);
+    box.innerHTML =
+      '<span class="dot">SYNC ' + esc(id) + "</span>" +
+      "<span>fetching from Google… " + sec + "s</span>" +
+      "<span>if this takes &gt;15s, cancel and use Browser sync</span>";
+  }, 1000);
   try {
     const r = await syncPageOnce(id, cursor);
     applySyncResult(r, id);
@@ -708,8 +724,10 @@ $("#syncBtn").onclick = async () => {
         openCurlModal("Google needs fresh credentials — paste a new SearchCreatives cURL from DevTools:");
       }
     }
+  } finally {
+    clearInterval(syncTimer);
+    $("#syncBtn").disabled = false;
   }
-  $("#syncBtn").disabled = false;
 };
 
 $("#loadBtn").onclick = () => {
