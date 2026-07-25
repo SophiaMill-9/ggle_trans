@@ -69,7 +69,19 @@ async function fetchAdvertiserPage(advertiserId, env) {
   });
 }
 
-async function searchCreativesRpc(advertiserId, cursor, env, token) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function parseRetryAfterMs(res) {
+  const ra = res.headers.get("Retry-After");
+  if (!ra) return null;
+  const sec = Number(ra);
+  if (Number.isFinite(sec) && sec > 0) return Math.min(sec * 1000, 300000);
+  const when = Date.parse(ra);
+  if (Number.isFinite(when)) return Math.max(0, Math.min(when - Date.now(), 300000));
+  return null;
+}
+
+async function searchCreativesRpc(advertiserId, cursor, env, token, extraHeaders = {}) {
   // NOTE: "14":[1] restricts results to Play-Store ads only. Many advertisers run
   // web/display/YouTube ads instead, which the filter hides entirely (0 results
   // even though ads exist). Omitting "14" returns creatives across all platforms.
@@ -81,21 +93,22 @@ async function searchCreativesRpc(advertiserId, cursor, env, token) {
   if (cursor) body["4"] = cursor;
 
   const headers = {
-    "User-Agent": UA,
+    "User-Agent": extraHeaders["User-Agent"] || env.GOOGLE_UA || UA,
     Accept: "*/*",
     "Accept-Language": "en-US,en;q=0.9",
     "Content-Type": "application/x-www-form-urlencoded",
     "X-Same-Domain": "1",
     Origin: BASE,
-    Referer: `${BASE}/?region=anywhere&hl=en`,
+    Referer: `${BASE}/advertiser/${advertiserId}?region=anywhere&hl=en`,
     Cookie: buildCookie(env),
+    ...extraHeaders,
   };
   if (token) headers["X-Framework-Xsrf-Token"] = token;
 
   return fetch(RPC, { method: "POST", headers, body: "f.req=" + encodeURIComponent(JSON.stringify(body)) });
 }
 
-async function rpcOnce(advertiserId, cursor, env, tokenOverride) {
+async function rpcOnce(advertiserId, cursor, env, tokenOverride, extraHeaders = {}) {
   const token = tokenOverride || env.XSRF_TOKEN || null;
   if (!env.TRANSPARENCY_COOKIE)
     throw new Error(
@@ -106,7 +119,7 @@ async function rpcOnce(advertiserId, cursor, env, tokenOverride) {
       "Missing XSRF token. Click Paste curl in the dashboard (SearchCreatives → Copy as cURL)."
     );
 
-  const res = await searchCreativesRpc(advertiserId, cursor, env, token);
+  const res = await searchCreativesRpc(advertiserId, cursor, env, token, extraHeaders);
   if (res.status === 429) return res;
   if (res.status === 401 || res.status === 403) {
     throw new Error(
@@ -116,22 +129,10 @@ async function rpcOnce(advertiserId, cursor, env, tokenOverride) {
   return res;
 }
 
-async function fetchPage(advertiserId, cursor, env, tokenOverride) {
-  const res = await rpcOnce(advertiserId, cursor, env, tokenOverride);
-  if (res.status === 429) {
-    throw new Error(
-      "Google rate limit (429). Wait 2–5 minutes, paste a fresh SearchCreatives cURL, then try once. Repeated clicks make it worse."
-    );
-  }
-  if (!res.ok) {
-    throw new Error(res.status === 403
-      ? "Google refused the request (403) - refresh the Token, or this IP may be blocked"
-      : `SearchCreatives HTTP ${res.status}`);
-  }
-  let text = await res.text();
-  if (text.startsWith(")]}'")) text = text.slice(4);
-  const raw = JSON.parse(text.trim());
-
+function parseSearchCreativesResponse(text) {
+  let body = text;
+  if (body.startsWith(")]}'")) body = body.slice(4);
+  const raw = JSON.parse(body.trim());
   const creatives = Array.isArray(raw["1"]) ? raw["1"] : [];
   const c2 = raw["2"];
   const nextCursor =
@@ -142,6 +143,67 @@ async function fetchPage(advertiserId, cursor, env, tokenOverride) {
     totalLow: Number(raw["4"]) || null,
     name: creatives.find((c) => typeof c?.["12"] === "string")?.["12"] || null,
   };
+}
+
+async function storeSyncPage(env, advertiserId, page) {
+  await upsert(env, "advertisers", [
+    {
+      id: advertiserId,
+      ...(page.name ? { name: page.name } : {}),
+      ...(page.totalLow ? { total_creatives: page.totalLow } : {}),
+      last_synced_at: new Date().toISOString(),
+    },
+  ]);
+  const rows = page.creatives.map((c) => parseCreative(c, advertiserId)).filter(Boolean);
+  await upsert(env, "creatives", rows);
+  return {
+    advertiser_id: advertiserId,
+    name: page.name,
+    total_estimate: page.totalLow,
+    fetched: rows.length,
+    next_cursor: page.nextCursor,
+  };
+}
+
+async function fetchPage(advertiserId, cursor, env, tokenOverride, extraHeaders = {}) {
+  // Warm session: hit the advertiser HTML page first (same as a real browser visit).
+  try {
+    await fetchAdvertiserPage(advertiserId, env);
+  } catch (_) {}
+
+  const token = tokenOverride || env.XSRF_TOKEN || null;
+  const retryDelays = [0, 45000, 90000];
+  let lastRes = null;
+
+  for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+    if (retryDelays[attempt] > 0) await sleep(retryDelays[attempt]);
+    const res = await rpcOnce(advertiserId, cursor, env, token, extraHeaders);
+    lastRes = res;
+    if (res.status === 429) {
+      const waitMs = parseRetryAfterMs(res) ?? retryDelays[attempt + 1] ?? 120000;
+      if (attempt < retryDelays.length - 1) {
+        await sleep(waitMs);
+        continue;
+      }
+      throw new Error(
+        "Google rate limit (429) from worker IP. Use Browser sync — it fetches from your machine and avoids Cloudflare throttling."
+      );
+    }
+    if (!res.ok) {
+      throw new Error(res.status === 403
+        ? "Google refused the request (403) - refresh the Token, or this IP may be blocked"
+        : `SearchCreatives HTTP ${res.status}`);
+    }
+    const text = await res.text();
+    return parseSearchCreativesResponse(text);
+  }
+
+  if (lastRes?.status === 429) {
+    throw new Error(
+      "Google rate limit (429) from worker IP. Use Browser sync — it fetches from your machine and avoids Cloudflare throttling."
+    );
+  }
+  throw new Error(`SearchCreatives HTTP ${lastRes?.status || "unknown"}`);
 }
 
 const epochToDate = (t) => {
@@ -534,7 +596,7 @@ async function selectRows(env, table, query) {
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization,Content-Type,X-Xsrf-Override,X-Cookie-Override",
+  "Access-Control-Allow-Headers": "Authorization,Content-Type,X-Xsrf-Override,X-Cookie-Override,X-User-Agent-Override",
   "Access-Control-Max-Age": "86400",
 };
 
@@ -587,24 +649,32 @@ export default {
         if (authErr) return json({ error: authErr }, 400);
 
         const tokenOverride = req.headers.get("X-Xsrf-Override") || env.XSRF_TOKEN || null;
-        const page = await fetchPage(id, cursor || null, gEnv, tokenOverride);
-        await upsert(env, "advertisers", [
-          {
-            id,
-            ...(page.name ? { name: page.name } : {}),
-            ...(page.totalLow ? { total_creatives: page.totalLow } : {}),
-            last_synced_at: new Date().toISOString(),
-          },
-        ]);
-        const rows = page.creatives.map((c) => parseCreative(c, id)).filter(Boolean);
-        await upsert(env, "creatives", rows);
-        return json({
-          advertiser_id: id,
-          name: page.name,
-          total_estimate: page.totalLow,
-          fetched: rows.length,
-          next_cursor: page.nextCursor,
-        });
+        const ua = req.headers.get("X-User-Agent-Override");
+        const extraHeaders = ua ? { "User-Agent": ua } : {};
+        const page = await fetchPage(id, cursor || null, gEnv, tokenOverride, extraHeaders);
+        return json(await storeSyncPage(env, id, page));
+      }
+
+      // POST /api/sync-ingest  { advertiser_id, google_response } -> parse browser-fetched page
+      if (path === "/api/sync-ingest" && req.method === "POST") {
+        const { advertiser_id, google_response } = await req.json();
+        let id = String(advertiser_id || "").trim();
+        const m = id.match(/AR\d{10,}/);
+        if (m) id = m[0];
+        if (!/^AR\d{10,}$/.test(id))
+          return json({ error: "Provide an AR... advertiser ID" }, 400);
+        if (!google_response || typeof google_response !== "string")
+          return json({ error: "google_response (raw SearchCreatives body) required" }, 400);
+        if (/google\.com\/sorry|rate.?limit|429/i.test(google_response.slice(0, 500)))
+          return json({ error: "Google returned a rate-limit/captcha page — wait a minute and retry in the browser tab." }, 429);
+
+        let page;
+        try {
+          page = parseSearchCreativesResponse(google_response);
+        } catch (e) {
+          return json({ error: "Could not parse Google response: " + String(e.message || e) }, 400);
+        }
+        return json(await storeSyncPage(env, id, page));
       }
 
       // GET /api/items?acct=&format=&after=&limit=  (list stored rows)
@@ -1326,6 +1396,7 @@ const HTML = `<!doctype html>
   .modal-status{min-height:20px;margin:10px 0 0;font:500 12px "IBM Plex Mono",monospace;color:var(--ok)}
   .modal-status.bad{color:var(--bad)}
   .modal-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+  .modal-steps{margin:0 0 12px;padding-left:20px;font-size:13px;color:var(--ink-soft);line-height:1.6}
   .auth-hint{margin:0 32px;padding:10px 14px;background:#fff8e6;border:1px solid #f0d080;border-radius:var(--radius);font:500 13px Inter;color:#6b4e00}
   .auth-hint.ok{background:#eef7ef;border-color:#a8d5b8;color:var(--ok)}
   @media (prefers-reduced-motion:no-preference){.card{transition:transform .12s ease}.card:hover{transform:translateY(-2px)}}
@@ -1346,11 +1417,31 @@ const HTML = `<!doctype html>
   <input id="advInput" type="text"
     placeholder="Paste advertiser URL or ID &mdash; e.g. AR02377450198621224961" aria-label="Advertiser URL or ID">
   <button id="syncBtn">Sync ads</button>
+  <button id="browserSyncBtn" class="ghost" title="Fetch from your browser (avoids worker 429)">Browser sync</button>
   <button id="loadBtn" class="ghost">Load apps</button>
   <button id="tokenBtn" class="ghost" title="Paste cURL from DevTools — auto-fills token and cookie">Paste curl</button>
 </div>
 <p id="authHint" class="auth-hint hidden" role="status"></p>
 <div id="console" role="status"></div>
+
+<div id="browserSyncModal" class="modal hidden" role="dialog" aria-labelledby="browserSyncTitle" aria-modal="true">
+  <div class="modal-box">
+    <h2 id="browserSyncTitle">Browser sync (avoids 429)</h2>
+    <p class="modal-hint">Google rate-limits Cloudflare Worker IPs. This runs the Google fetch <b>from your browser</b> (same as DevTools), then sends results to Supabase.</p>
+    <ol class="modal-steps">
+      <li>Click <b>Open Google tab</b> below (log in if needed).</li>
+      <li>On that tab: DevTools → Console → paste the script → Enter.</li>
+      <li>Return here — progress updates automatically.</li>
+    </ol>
+    <textarea id="browserSyncScript" rows="12" spellcheck="false" readonly aria-label="Browser sync script"></textarea>
+    <div id="browserSyncStatus" class="modal-status"></div>
+    <div class="modal-actions">
+      <button id="browserSyncOpen">Open Google tab</button>
+      <button id="browserSyncCopy">Copy script</button>
+      <button id="browserSyncClose" class="ghost">Close</button>
+    </div>
+  </div>
+</div>
 
 <div id="curlModal" class="modal hidden" role="dialog" aria-labelledby="curlTitle" aria-modal="true">
   <div class="modal-box">
@@ -1396,7 +1487,7 @@ const HTML = `<!doctype html>
       </tr></thead>
       <tbody id="appBody"></tbody>
     </table>
-    <div class="empty" id="empty">1) Paste curl (token + cookie) &nbsp; 2) Sync ads (20 per page) &nbsp; 3) Load apps</div>
+    <div class="empty" id="empty">1) Paste curl (token + cookie) &nbsp; 2) Browser sync or Sync ads (20/page) &nbsp; 3) Load apps</div>
   </div>
 </section>
 
@@ -1442,6 +1533,8 @@ function authHeaders(extra) {
   if (xt) h["X-Xsrf-Override"] = xt;
   const ck = localStorage.getItem("transparency_cookie");
   if (ck) h["X-Cookie-Override"] = ck;
+  const ua = localStorage.getItem("google_ua");
+  if (ua) h["X-User-Agent-Override"] = ua;
   return h;
 }
 
@@ -1452,7 +1545,7 @@ function maskSecret(s) {
 }
 
 function parseCurl(text) {
-  const out = { token: null, cookie: null, advertiserIds: [] };
+  const out = { token: null, cookie: null, userAgent: null, advertiserIds: [] };
   if (!text || !/\\bcurl\\b/i.test(text)) return out;
   const s = text.replace(/\\\\\\r?\\n/g, " ");
   const headerRe = /(?:-H|--header)\\s+(?:'((?:\\\\'|[^'])*)'|"((?:\\\\"|[^"])*)")/gi;
@@ -1465,6 +1558,7 @@ function parseCurl(text) {
     const val = h.slice(colon + 1).trim();
     if (name === "x-framework-xsrf-token" && val) out.token = val;
     else if (name === "cookie" && val) out.cookie = val;
+    else if (name === "user-agent" && val) out.userAgent = val;
   }
   if (!out.cookie) {
     const cm = s.match(/(?:--cookie|-b)\\s+(?:'([^']+)'|"([^"]+)"|(\\S+))/i);
@@ -1488,7 +1582,7 @@ function hasCredentials() {
 function updateAuthHint() {
   const el = $("#authHint");
   if (hasCredentials()) {
-    el.textContent = "Credentials saved (token + cookie). Paste curl again if sync fails with 403/429.";
+    el.textContent = "Credentials saved. Prefer Browser sync if worker Sync hits 429.";
     el.className = "auth-hint ok";
   } else {
     el.textContent = "Required before sync: click Paste curl and save a SearchCreatives cURL from DevTools. Google blocks the worker without your browser session.";
@@ -1529,6 +1623,7 @@ function saveFromCurl() {
   }
   if (parsed.token) localStorage.setItem("xsrf_token", parsed.token);
   if (parsed.cookie) localStorage.setItem("transparency_cookie", parsed.cookie);
+  if (parsed.userAgent) localStorage.setItem("google_ua", parsed.userAgent);
   if (parsed.advertiserIds.length === 1 && !$("#advInput").value.trim())
     $("#advInput").value = parsed.advertiserIds[0];
   const msgs = [];
@@ -1548,11 +1643,122 @@ $("#curlSave").onclick = () => { if (saveFromCurl()) setTimeout(closeCurlModal, 
 $("#curlClear").onclick = () => {
   localStorage.removeItem("xsrf_token");
   localStorage.removeItem("transparency_cookie");
+  localStorage.removeItem("google_ua");
   updateAuthBtn();
   $("#curlStatus").textContent = "Cleared saved token and cookie.";
   $("#curlStatus").className = "modal-status";
 };
 updateAuthBtn();
+
+/* ---------- browser sync (avoids worker IP 429) ---------- */
+let browserSyncPopup = null;
+
+function buildBrowserSyncScript(id, cursor) {
+  const cfg = {
+    worker: workerBase(),
+    id,
+    cursor: cursor || null,
+    token: localStorage.getItem("xsrf_token") || "",
+    key: localStorage.getItem("dash_key") || "",
+  };
+  return \`(async()=>{
+  const cfg=\${JSON.stringify(cfg)};
+  const RPC="https://adstransparency.google.com/anji/_/rpc/SearchService/SearchCreatives?authuser=0";
+  const xsrf=(()=>{const h=document.documentElement.innerHTML;for(const re of[/SNlM0e\\\\":\\\\"([^"]+)\\\\"/,/xsrfToken['":\\\\s]+(['"])([^'"]+)\\\\2/i]){const m=h.match(re);if(m)return m[m.length-1];}return cfg.token;})();
+  const body={"2":20,"3":{"12":{"1":"","2":true},"13":{"1":[cfg.id]}},"7":{"1":1,"2":22,"3":2356}};
+  if(cfg.cursor)body["4"]=cfg.cursor;
+  const gr=await fetch(RPC,{method:"POST",credentials:"include",headers:{"Content-Type":"application/x-www-form-urlencoded","X-Same-Domain":"1","X-Framework-Xsrf-Token":xsrf,Origin:"https://adstransparency.google.com",Referer:location.href},body:"f.req="+encodeURIComponent(JSON.stringify(body))});
+  const text=await gr.text();
+  if(!gr.ok)throw new Error("Google HTTP "+gr.status+(gr.status===429?" (rate limit — wait 1 min)":""));
+  const ir=await fetch(cfg.worker+"/api/sync-ingest",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+cfg.key},body:JSON.stringify({advertiser_id:cfg.id,google_response:text})});
+  const j=await ir.json();
+  if(!ir.ok)throw new Error(j.error||ir.status);
+  const msg="Synced "+j.fetched+" ads"+(j.next_cursor?" — more pages available":" — complete");
+  if(window.opener)window.opener.postMessage({type:"ggle-sync-done",result:j},"*");
+  alert(msg+"\\\\nReturn to Creative Light Table.");
+})().catch(e=>alert("Sync failed: "+e.message));\`;
+}
+
+function openBrowserSyncModal(id, cursor) {
+  $("#browserSyncScript").value = buildBrowserSyncScript(id, cursor);
+  $("#browserSyncStatus").textContent = "";
+  $("#browserSyncStatus").className = "modal-status";
+  $("#browserSyncModal").classList.remove("hidden");
+}
+
+function closeBrowserSyncModal() {
+  $("#browserSyncModal").classList.add("hidden");
+}
+
+function openGoogleTab(id) {
+  const url = "https://adstransparency.google.com/advertiser/" + encodeURIComponent(id) + "?region=anywhere&hl=en";
+  browserSyncPopup = window.open(url, "ggle_browser_sync", "width=960,height=720");
+  if (!browserSyncPopup) $("#browserSyncStatus").textContent = "Popup blocked — allow popups, or open the URL manually.";
+}
+
+function applySyncResult(r, id) {
+  lastSyncAt = Date.now();
+  sessPages++; sessTotal += r.fetched;
+  const box = $("#console");
+  box.className = "on";
+  box.classList.remove("failed");
+  box.innerHTML =
+    '<span class="dot">SYNC ' + esc(r.name || id) + "</span>" +
+    "<span>pages " + String(sessPages).padStart(3, "0") + "</span>" +
+    "<span>creatives " + String(sessTotal).padStart(5, "0") + (r.total_estimate ? " / ~" + r.total_estimate : "") + "</span>";
+  if (r.next_cursor) {
+    localStorage.setItem("cursor:" + id, r.next_cursor);
+    $("#syncBtn").textContent = "Fetch next 20";
+    box.innerHTML += "<span>stored " + r.fetched + " ads — click Fetch next 20 or Browser sync for next page</span>";
+  } else {
+    localStorage.removeItem("cursor:" + id);
+    $("#syncBtn").textContent = "Sync ads";
+    box.classList.add("done");
+    box.innerHTML += "<span>complete — click Load apps to view</span>";
+    sessPages = 0; sessTotal = 0;
+  }
+}
+
+window.addEventListener("message", (e) => {
+  if (!e.data || e.data.type !== "ggle-sync-done") return;
+  const r = e.data.result;
+  if (!r || !advertiserId) return;
+  applySyncResult(r, advertiserId);
+  closeBrowserSyncModal();
+  $("#browserSyncStatus").textContent = "Received " + r.fetched + " ads from browser tab.";
+  $("#browserSyncStatus").className = "modal-status";
+});
+
+$("#browserSyncBtn").onclick = () => {
+  const id = extractId($("#advInput").value.trim());
+  if (!id) return alert("Paste the advertiser URL or ID first.");
+  if (advertiserId !== id) { advertiserId = id; sessPages = 0; sessTotal = 0; }
+  localStorage.setItem("last_adv", id);
+  const cursor = localStorage.getItem("cursor:" + id) || null;
+  openBrowserSyncModal(id, cursor);
+};
+
+$("#browserSyncOpen").onclick = () => {
+  const id = extractId($("#advInput").value.trim());
+  if (!id) return alert("Advertiser ID required.");
+  openGoogleTab(id);
+};
+
+$("#browserSyncCopy").onclick = async () => {
+  const script = $("#browserSyncScript").value;
+  try {
+    await navigator.clipboard.writeText(script);
+    $("#browserSyncStatus").textContent = "Script copied — paste in the Google tab console.";
+    $("#browserSyncStatus").className = "modal-status";
+  } catch (_) {
+    $("#browserSyncScript").select();
+    document.execCommand("copy");
+    $("#browserSyncStatus").textContent = "Script copied (fallback).";
+  }
+};
+
+$("#browserSyncClose").onclick = closeBrowserSyncModal;
+$("#browserSyncModal").onclick = (e) => { if (e.target === $("#browserSyncModal")) closeBrowserSyncModal(); };
 
 async function api(path, opts = {}) {
   opts.headers = authHeaders(opts.headers);
@@ -1664,16 +1870,26 @@ let resolvingPrev = false;     // batch preview-resolution in progress
 let sortKey = "last_seen", sortDir = "desc";
 const countryNames = new Map(); // cc -> name (for the filter dropdown)
 
-/* ---------- manual sync (one page of 40 per tap) ---------- */
+/* ---------- manual sync (one page of 20 per tap) ---------- */
 let sessPages = 0, sessTotal = 0;
 let lastSyncAt = 0;
-const MIN_SYNC_GAP_MS = 60000;
+const MIN_SYNC_GAP_MS = 120000;
 
 async function syncPageOnce(id, cursor) {
   return api("/api/sync-page", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ advertiser_id: id, cursor }),
   });
+}
+
+function offerBrowserSync(id, cursor, reason) {
+  const box = $("#console");
+  box.classList.add("failed");
+  box.innerHTML =
+    '<span class="dot">SYNC ' + esc(id) + "</span>" +
+    "<span>" + esc(reason) + "</span>" +
+    "<span>Tip: click <b>Browser sync</b> — uses your IP, not Cloudflare.</span>";
+  openBrowserSyncModal(id, cursor);
 }
 
 $("#syncBtn").onclick = async () => {
@@ -1689,7 +1905,7 @@ $("#syncBtn").onclick = async () => {
   const gap = Date.now() - lastSyncAt;
   if (lastSyncAt && gap < MIN_SYNC_GAP_MS) {
     const waitSec = Math.ceil((MIN_SYNC_GAP_MS - gap) / 1000);
-    return alert("Please wait " + waitSec + "s between sync taps to avoid Google throttling.");
+    return alert("Please wait " + waitSec + "s between sync taps, or use Browser sync instead.");
   }
 
   const box = $("#console");
@@ -1701,35 +1917,18 @@ $("#syncBtn").onclick = async () => {
   $("#syncBtn").disabled = true;
   try {
     const r = await syncPageOnce(id, cursor);
-    lastSyncAt = Date.now();
-    sessPages++; sessTotal += r.fetched;
-    box.classList.remove("failed");
-    box.innerHTML =
-      '<span class="dot">SYNC ' + esc(r.name || id) + "</span>" +
-      "<span>pages " + String(sessPages).padStart(3, "0") + "</span>" +
-      "<span>creatives " + String(sessTotal).padStart(5, "0") + (r.total_estimate ? " / ~" + r.total_estimate : "") + "</span>";
-    if (r.next_cursor) {
-      localStorage.setItem("cursor:" + id, r.next_cursor);
-      $("#syncBtn").textContent = "Fetch next 20";
-      box.innerHTML += "<span>stored " + r.fetched + " ads - click Load apps, then Fetch next 20 when ready</span>";
-    } else {
-      localStorage.removeItem("cursor:" + id);
-      $("#syncBtn").textContent = "Sync ads";
-      box.classList.add("done");
-      box.innerHTML += "<span>complete - click Load apps to view</span>";
-      sessPages = 0; sessTotal = 0;
-    }
+    applySyncResult(r, id);
   } catch (e) {
-    box.classList.add("failed");
-    box.innerHTML =
-      '<span class="dot">SYNC ' + esc(id) + "</span>" +
-      "<span>failed: " + esc(e.message) + "</span>";
-    if (/429|rate limit/i.test(e.message)) {
-      box.innerHTML +=
-        "<span>Tip: wait 2–5 min, paste a fresh cURL, then try once. Do not click Sync repeatedly.</span>";
-    }
-    if (/xsrf|403/i.test(e.message)) {
-      openCurlModal("Google needs fresh credentials — paste a new SearchCreatives cURL from DevTools:");
+    if (/429|rate limit|worker IP/i.test(e.message)) {
+      offerBrowserSync(id, cursor, e.message);
+    } else {
+      box.classList.add("failed");
+      box.innerHTML =
+        '<span class="dot">SYNC ' + esc(id) + "</span>" +
+        "<span>failed: " + esc(e.message) + "</span>";
+      if (/xsrf|403/i.test(e.message)) {
+        openCurlModal("Google needs fresh credentials — paste a new SearchCreatives cURL from DevTools:");
+      }
     }
   }
   $("#syncBtn").disabled = false;
